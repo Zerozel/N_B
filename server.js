@@ -62,6 +62,7 @@ app.get('/webhook', (req, res) => {
 
 // --- THE CORE MESSAGE ROUTER & STATE MACHINE (POST) ---
 app.post('/webhook', async (req, res) => {
+  console.log('🔔 RAW WEBHOOK PING:', JSON.stringify(req.body, null, 2));
   res.sendStatus(200); // 1. Instantly acknowledge receipt to Meta
 
   try {
