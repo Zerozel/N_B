@@ -160,4 +160,163 @@ app.post('/webhook', async (req, res) => {
           return;
         }
 
-        //
+        // --- PHASE E: ARTISAN JOB COMPLETION TRACKER ---
+        if (user.status.startsWith('ACTIVE_JOB_')) {
+          const jobId = user.status.split('_')[2];
+
+          if (text === '1' || text === '2') {
+            const reportedStatus = text === '1' ? 'COMPLETED' : 'CANCELLED';
+
+            await supabase.from('job_tickets').update({ status: `PENDING_VERIFICATION_${reportedStatus}` }).eq('job_id', jobId);
+            
+            await supabase.from('artisans').update({ is_available: true }).eq('phone_number', from);
+            await supabase.from('users').update({ status: 'IDLE' }).eq('phone_number', from);
+
+            await sendMessage(from, `✅ System Updated! Job #${jobId} reported as ${reportedStatus}. You are now back in the available pool for new requests.`);
+
+            const { data: ticket } = await supabase.from('job_tickets').select('client_phone').eq('job_id', jobId).single();
+            if(ticket && ticket.client_phone) {
+              await supabase.from('users').update({ status: `VERIFYING_JOB_${jobId}_${reportedStatus}` }).eq('phone_number', ticket.client_phone);
+              
+              const actionText = reportedStatus === 'COMPLETED' ? 'COMPLETED the service' : 'CANCELLED the service';
+              await sendMessage(ticket.client_phone, `🔔 *Job Verification Required!*\n\nThe artisan reported that they have *${actionText}* for Job #${jobId}.\n\nPlease verify by replying with a number:\n*1* - Yes, I confirm this.\n*2* - No, I dispute this (Report an issue).`);
+            }
+          } else {
+            await sendMessage(from, '❌ Invalid choice.\n\n⚠️ *You cannot receive new jobs until you close this one.*\n\nPlease reply with:\n*1* - Job Completed\n*2* - Job Cancelled');
+          }
+          return;
+        }
+
+        // --- PHASE F: CLIENT VERIFICATION & DISPUTE ---
+        if (user.status.startsWith('VERIFYING_JOB_')) {
+          const parts = user.status.split('_');
+          const jobId = parts[2];
+          const reportedStatus = parts[3]; 
+
+          if (text === '1') {
+            await supabase.from('job_tickets').update({ status: reportedStatus }).eq('job_id', jobId);
+            await supabase.from('users').update({ status: 'IDLE' }).eq('phone_number', from);
+            await sendMessage(from, '✅ Thank you for confirming! Your ticket is now officially closed. Reply "menu" anytime to request a new service.');
+          } else if (text === '2') {
+            await supabase.from('job_tickets').update({ status: 'DISPUTED' }).eq('job_id', jobId);
+            await supabase.from('users').update({ status: 'IDLE' }).eq('phone_number', from);
+            await sendMessage(from, `⚠️ We have logged this job as DISPUTED. A Nexa Customer Service agent will review the issue and contact you shortly to resolve this.\n\n💬 *Direct support line: 09045955670*`);
+          } else {
+            await sendMessage(from, '❌ Invalid choice. Please reply with *1* to Confirm, or *2* to Dispute.');
+          }
+          return;
+        }
+
+        // --- PHASE G: ENQUIRY MODE LOOP ---
+        if (user.status === 'ENQUIRY_MODE') {
+          await supabase.from('users').update({ status: 'WAITING_FOR_MATCH' }).eq('phone_number', from);
+          
+          // THE UPGRADE: Forward the exact message to the Customer Service rep
+          const customerServiceNumber = '2349032925721';
+          await sendMessage(customerServiceNumber, `🚨 *NEW NEXA ENQUIRY*\n\n*From:* +${from}\n*Message:* "${text}"\n\n_Reply directly to their number to assist them._`);
+          
+          return await sendMessage(from, '✅ *Your enquiry has been received!*\n\nA human agent will review this shortly. For immediate assistance, please chat directly with Nexa Customer Service at: *09045955670*\n\n(Reply "menu" anytime to start a new request).');
+        }
+        
+        // --- PHASE G.5: THE HOLDING ROOM ---
+        if (user.status === 'WAITING_FOR_MATCH') {
+          return await sendMessage(from, '⏳ We are currently contacting available artisans in your area. Please stand by!\n\n(Reply "menu" at any time to cancel this search and start over).');
+        }
+
+        // --- PHASE H: THE CLIENT INTAKE FUNNEL (State Machine) ---
+        if (user.status === 'NEW' || user.status === 'IDLE') {
+          await supabase.from('users').update({ status: 'AWAITING_INTAKE_TYPE' }).eq('phone_number', from);
+          return await sendMessage(from, 'Welcome to *Nexa*! 🛠️\n\nAre you looking for a service or just asking a question?\nReply with a number:\n1️⃣ Service Call\n2️⃣ Make an Enquiry');
+        }
+        
+        if (user.status === 'AWAITING_INTAKE_TYPE') {
+          if (text === '1') {
+            await supabase.from('users').update({ status: 'AWAITING_CATEGORY' }).eq('phone_number', from);
+            return await sendMessage(from, 'Great. What type of artisan do you need right now?\n\n1️⃣ Electrical\n2️⃣ Plumbing\n3️⃣ Carpentry');
+          } else if (text === '2') {
+            await supabase.from('users').update({ status: 'ENQUIRY_MODE' }).eq('phone_number', from);
+            return await sendMessage(from, 'Please type your enquiry below. A Nexa agent will review it shortly. (Reply "menu" at any time to go back).\n\n*Direct Customer Service: 09045955670*');
+          } else {
+            // THE UPGRADE: Reprint the actual menu instead of just an error message
+            return await sendMessage(from, 'Welcome back to *Nexa*! 🛠️\n\nAre you looking for a service or just asking a question?\nReply with a number:\n1️⃣ Service Call\n2️⃣ Make an Enquiry');
+          }
+        }
+        
+        if (user.status === 'AWAITING_CATEGORY') {
+          const categories = { '1': 'Electrical', '2': 'Plumbing', '3': 'Carpentry' };
+          if (categories[text]) {
+            await supabase.from('users').update({ status: `AWAITING_LOCATION_${categories[text]}` }).eq('phone_number', from);
+            return await sendMessage(from, `✅ You selected *${categories[text]}*.\n\nPlease reply with your exact location/address (e.g., Block A, Campus Hostel).`);
+          } else {
+            return await sendMessage(from, '❌ Invalid choice. Please reply with *1*, *2*, or *3*.');
+          }
+        }
+        
+        if (user.status.startsWith('AWAITING_LOCATION_')) {
+          const category = user.status.split('_')[2];
+          await supabase.from('users').update({ status: `AWAITING_DESC_${category}_${text}` }).eq('phone_number', from);
+          return await sendMessage(from, '📍 Location saved.\n\nFinally, please briefly describe the issue (e.g., "Sparking wall socket" or "Broken pipe").');
+        }
+        
+        if (user.status.startsWith('AWAITING_DESC_')) {
+          const parts = user.status.split('_');
+          const category = parts[2];
+          const location = parts.slice(3).join('_'); 
+          const description = text;
+          
+          const { data: job, error: jobError } = await supabase.from('job_tickets').insert([{
+            client_phone: from,
+            category: category,
+            location: location,
+            description: description,
+            status: 'SEARCHING'
+          }]).select().single();
+          
+          if (jobError) throw jobError;
+          
+          await supabase.from('users').update({ status: 'IDLE' }).eq('phone_number', from);
+          await sendMessage(from, '⚙️ *Request received!* Processing your ticket...\nSearching for available artisans nearby. We will notify you once a match is found.');
+          
+          console.log(`🚨 INITIATING BROADCAST FOR JOB #${job.job_id} | Category: ${category}`);
+          
+          const { data: artisans } = await supabase
+            .from('artisans')
+            .select('*')
+            .eq('category', category)
+            .eq('is_available', true)
+            .limit(3);
+          
+          if (!artisans || artisans.length === 0) {
+            await supabase.from('job_tickets').update({ status: 'FAILED_NO_ARTISANS' }).eq('job_id', job.job_id);
+            return await sendMessage(from, '⚠️ We are sorry, but there are no available artisans in that category right now. Please try again later.\n\n💬 *For further assistance, chat with Nexa Customer Service: 09045955670*');
+          }
+          
+          const artisanNumbers = artisans.map(a => a.phone_number);
+          
+          await supabase.from('job_tickets').update({
+            status: 'BROADCASTED',
+            notified_artisans: artisanNumbers
+          }).eq('job_id', job.job_id);
+          
+          // Fire the Broadcast
+          for (const phone of artisanNumbers) {
+            await sendMessage(
+              phone,
+              `🚨 *FAST MATCH ALERT!* 🚨\n\n*Job ID:* #${job.job_id}\n*Category:* ${category}\n*Location:* ${location}\n*Issue:* ${description}\n\n*(First to accept gets the client)*\nReply *ACCEPT ${job.job_id}* to claim this job.`
+            );
+          }
+          return;
+        }
+        
+      }
+    }
+  } catch (err) {
+    console.error('❌ CRITICAL SYSTEM ERROR:', err);
+    // Attempting a fail-safe message if 'from' is known, but usually best just to log it to prevent infinite loops
+  }
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🚀 Nexa Core is Online (Port ${PORT})`);
+});
