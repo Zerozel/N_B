@@ -19,7 +19,7 @@ async function processIncomingMessage(from, text) {
     }
 
     // --- 1. THE DEEP-LINK INTERCEPTOR ---
-    const const refMatch = cleanText.match(/Ref:\s*(ART-[A-Z0-9]+)/i);
+    const refMatch = cleanText.match(/Ref:\s*(ART-[A-Z0-9]+)/i);
     let referredBy = null;
     
     if (refMatch) {
