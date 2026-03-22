@@ -2,7 +2,8 @@ const supabase = require('../config/supabase');
 const { sendMessage } = require('../utils/whatsapp');
 const { extractNumber, detectCategoryIntent } = require('../utils/fuzzyRouter');
 
-const CUSTOMER_SERVICE_NUMBER = '2349032925721'; // Live routing for manual escalation
+// ⚠️ Ensure this is your exact personal number with the country code (no + sign)
+const CUSTOMER_SERVICE_NUMBER = '2349045955670'; 
 
 async function handleClientFlow(user, from, text) {
   const cleanText = text.trim();
@@ -12,12 +13,25 @@ async function handleClientFlow(user, from, text) {
   if (lowerText === 'menu' || lowerText === 'cancel' || lowerText === 'restart') {
     await supabase.from('users').update({ status: 'AWAITING_INTAKE_TYPE' }).eq('phone_number', from);
     await sendMessage(from, '🔄 *Main Menu* 🛠️\n\nReply with a number:\n1️⃣ Service Call\n2️⃣ Make an Enquiry');
-    return true; // Return true tells the main router this message was handled
+    return true; 
+  }
+
+  // --- ENQUIRY MODE LOOP (Fixed & Optimized) ---
+  if (user.status === 'ENQUIRY_MODE') {
+    // 1. Instantly release the user back to IDLE so they don't get stuck
+    await supabase.from('users').update({ status: 'IDLE' }).eq('phone_number', from);
+    
+    // 2. Fire the alert to YOUR phone
+    await sendMessage(CUSTOMER_SERVICE_NUMBER, `🚨 *NEW NEXA ENQUIRY*\n\n*From:* +${from}\n*Message:* "${cleanText}"\n\n_Click their number above to chat with them directly._`);
+    
+    // 3. Send the confirmation to the user
+    await sendMessage(from, '✅ *Your enquiry has been received!*\n\nA human agent will review this shortly. For immediate assistance, please chat directly with Nexa Customer Service at: *09045955670*\n\n(Reply "menu" anytime to start a new request).');
+    
+    return true;
   }
 
   // --- PHASE H: THE INTAKE FUNNEL ---
   if (user.status === 'NEW' || user.status === 'IDLE') {
-    // 1. Check for fuzzy intent first (Fast-Track Bypass)
     const intentCategory = detectCategoryIntent(cleanText);
     if (intentCategory) {
       await supabase.from('users').update({ status: `AWAITING_LOCATION_${intentCategory}` }).eq('phone_number', from);
@@ -25,19 +39,19 @@ async function handleClientFlow(user, from, text) {
       return true;
     }
 
-    // 2. Normal flow
     await supabase.from('users').update({ status: 'AWAITING_INTAKE_TYPE' }).eq('phone_number', from);
     await sendMessage(from, 'Welcome to *Nexa*! 🛠️\n\nAre you looking for a service or just asking a question?\nReply with a number:\n1️⃣ Service Call\n2️⃣ Make an Enquiry');
     return true;
   }
 
   if (user.status === 'AWAITING_INTAKE_TYPE') {
-    const choice = extractNumber(cleanText, ['1', '2']); // Forgives typos
+    const choice = extractNumber(cleanText, ['1', '2']); 
     
     if (choice === '1') {
       await supabase.from('users').update({ status: 'AWAITING_CATEGORY' }).eq('phone_number', from);
       await sendMessage(from, 'Great. What type of artisan do you need right now?\n\n1️⃣ Electrical\n2️⃣ Plumbing\n3️⃣ Carpentry');
     } else if (choice === '2') {
+      // Sends them into the Enquiry Mode for their next message
       await supabase.from('users').update({ status: 'ENQUIRY_MODE' }).eq('phone_number', from);
       await sendMessage(from, 'Please type your enquiry below. A Nexa agent will review it shortly. (Reply "menu" at any time to go back).\n\n*Direct Customer Service: 09045955670*');
     } else {
@@ -47,10 +61,8 @@ async function handleClientFlow(user, from, text) {
   }
 
   if (user.status === 'AWAITING_CATEGORY') {
-    // Check if they typed the category directly instead of a number
     let category = detectCategoryIntent(cleanText);
     
-    // If not, check if they typed a valid number
     if (!category) {
       const choice = extractNumber(cleanText, ['1', '2', '3']);
       const map = { '1': 'Electrical', '2': 'Plumbing', '3': 'Carpentry' };
@@ -111,20 +123,7 @@ async function handleClientFlow(user, from, text) {
     return true;
   }
 
-  // --- ENQUIRY MODE LOOP ---
-  if (user.status === 'ENQUIRY_MODE') {
-    await supabase.from('users').update({ status: 'WAITING_FOR_MATCH' }).eq('phone_number', from);
-    await sendMessage(CUSTOMER_SERVICE_NUMBER, `🚨 *NEW NEXA ENQUIRY*\n\n*From:* +${from}\n*Message:* "${cleanText}"\n\n_Reply directly to their number to assist them._`);
-    await sendMessage(from, '✅ *Your enquiry has been received!*\n\nA human agent will review this shortly. For immediate assistance, please chat directly with Nexa Customer Service at: *09045955670*\n\n(Reply "menu" anytime to start a new request).');
-    return true;
-  }
-  
-  if (user.status === 'WAITING_FOR_MATCH') {
-    await sendMessage(from, '⏳ We are currently contacting available artisans in your area. Please stand by!\n\n(Reply "menu" at any time to cancel this search and start over).');
-    return true;
-  }
-
-  return false; // Tells the router this state belongs to someone else (like the Artisan)
+  return false; 
 }
 
 module.exports = { handleClientFlow };
