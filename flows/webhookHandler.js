@@ -2,6 +2,7 @@ const supabase = require('../config/supabase');
 const { handleClientFlow } = require('./clientFlow');
 const { handleArtisanFlow } = require('./artisanFlow');
 const { sendMessage } = require('../utils/whatsapp');
+const { handleOnboardingFlow } = require('./onboardingFlow');
 
 async function processIncomingMessage(from, text) {
   try {
@@ -50,6 +51,12 @@ async function processIncomingMessage(from, text) {
 
     // --- 3. THE ROUTER ---
     // Try the Artisan Flow first. If it returns true, the message was handled.
+    
+    // Check if they are trying to register as an Artisan
+    const isOnboardingHandled = await handleOnboardingFlow(user, from, cleanText);
+    if (isOnboardingHandled) return;
+
+    // Try the Artisan Flow first.
     const isArtisanHandled = await handleArtisanFlow(user, from, cleanText);
     if (isArtisanHandled) return;
 
