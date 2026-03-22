@@ -40,7 +40,7 @@ async function handleOnboardingFlow(user, from, text) {
     const category = map[choice];
 
     if (!category) {
-      await sendMessage(from, '❌ Invalid choice. Please reply with *1*, *2*, or *3*.');
+      await sendMessage(from, '❌ Invalid choice. Please reply with *1*, *2*, or *3*.\n\n*(Type "cancel" at any time to exit)*');
       return true;
     }
 
