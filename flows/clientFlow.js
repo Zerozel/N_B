@@ -3,18 +3,10 @@ const { sendMessage } = require('../utils/whatsapp');
 const { extractNumber, detectCategoryIntent } = require('../utils/fuzzyRouter');
 
 // ⚠️ Ensure this is your exact personal number with the country code (no + sign)
-const CUSTOMER_SERVICE_NUMBER = '2349045955670'; 
+const CUSTOMER_SERVICE_NUMBER = '2347079722171'; 
 
 async function handleClientFlow(user, from, text) {
   const cleanText = text.trim();
-  const lowerText = cleanText.toLowerCase();
-
-  // --- GLOBAL ESCAPE HATCH ---
-  if (lowerText === 'menu' || lowerText === 'cancel' || lowerText === 'restart') {
-    await supabase.from('users').update({ status: 'AWAITING_INTAKE_TYPE' }).eq('phone_number', from);
-    await sendMessage(from, '🔄 *Main Menu* 🛠️\n\nReply with a number:\n1️⃣ Service Call\n2️⃣ Make an Enquiry');
-    return true; 
-  }
 
   // --- ENQUIRY MODE LOOP (Fixed & Optimized) ---
   if (user.status === 'ENQUIRY_MODE') {
@@ -53,9 +45,10 @@ async function handleClientFlow(user, from, text) {
     } else if (choice === '2') {
       // Sends them into the Enquiry Mode for their next message
       await supabase.from('users').update({ status: 'ENQUIRY_MODE' }).eq('phone_number', from);
-      await sendMessage(from, 'Please type your enquiry below. A Nexa agent will review it shortly. (Reply "menu" at any time to go back).\n\n*Direct Customer Service: 09045955670*');
+      await sendMessage(from, 'Please type your enquiry below. A Nexa agent will review it shortly. (Reply "cancel" at any time to go back).\n\n*Direct Customer Service: 09045955670*');
     } else {
-      await sendMessage(from, 'Welcome back to *Nexa*! 🛠️\n\nAre you looking for a service or just asking a question?\nReply with a number:\n1️⃣ Service Call\n2️⃣ Make an Enquiry');
+      // Updated warning with the kill phrase instruction
+      await sendMessage(from, 'Welcome back to *Nexa*! 🛠️\n\nAre you looking for a service or just asking a question?\nReply with *1* or *2*.\n\n*(Type "cancel" to exit)*');
     }
     return true;
   }
@@ -73,7 +66,8 @@ async function handleClientFlow(user, from, text) {
       await supabase.from('users').update({ status: `AWAITING_LOCATION_${category}` }).eq('phone_number', from);
       await sendMessage(from, `✅ We have registered a *${category}* request.\n\nPlease reply with your exact location/address (e.g., Block A, Campus Hostel).`);
     } else {
-      await sendMessage(from, '❌ I didn\'t quite catch that. Please reply with *1*, *2*, or *3*, or just type the service you need.');
+      // Updated warning with the kill phrase instruction
+      await sendMessage(from, '❌ I didn\'t quite catch that. Please reply with *1*, *2*, or *3*, or just type the service you need.\n\n*(Type "cancel" at any time to exit)*');
     }
     return true;
   }
