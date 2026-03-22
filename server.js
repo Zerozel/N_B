@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const { processIncomingMessage } = require('./flows/webhookHandler');
 const supabase = require('./config/supabase'); // Needed for the cron job
+const { sendMessage } = require('./utils/whatsapp');
 
 const app = express();
 app.use(express.json());
@@ -48,7 +49,7 @@ app.post('/webhook', async (req, res) => {
 });
 
 // --- THE 5-MINUTE CRON JOB ENDPOINT ---
-// You will set up cron-job.org to ping https://your-app.onrender.com/cron every 1 minute
+// --- THE 5-MINUTE CRON JOB ENDPOINT ---
 app.get('/cron', async (req, res) => {
   try {
     // 1. Find jobs that are PENDING_PREFERRED_ARTISAN and older than 5 minutes
@@ -62,12 +63,37 @@ app.get('/cron', async (req, res) => {
 
     if (expiredJobs && expiredJobs.length > 0) {
       for (const job of expiredJobs) {
-        // 2. Change status to BROADCASTED
-        await supabase.from('job_tickets').update({ status: 'BROADCASTED' }).eq('job_id', job.job_id);
-        
-        // 3. Blast to the general pool (Logic to be expanded here or in utils)
         console.log(`⏰ Time expired for Job #${job.job_id}. Blasting to general pool.`);
-        // Note: You will inject the sendMessage broadcast loop here to alert 3 random artisans.
+        
+        // 2. Find 3 available artisans in that category to take over
+        const { data: backupArtisans } = await supabase
+          .from('artisans')
+          .select('phone_number')
+          .eq('category', job.category)
+          .eq('is_available', true)
+          .limit(3);
+
+        if (!backupArtisans || backupArtisans.length === 0) {
+          await supabase.from('job_tickets').update({ status: 'FAILED_NO_ARTISANS' }).eq('job_id', job.job_id);
+          await sendMessage(job.client_phone, '⚠️ The requested artisan didn\'t respond, and no backups are currently available. Please reply "menu" to try again later.');
+          continue; // Move to the next expired job if this one fails
+        }
+
+        const backupNumbers = backupArtisans.map(a => a.phone_number);
+        
+        // 3. Update the ticket to show it's now a general broadcast
+        await supabase.from('job_tickets').update({ 
+          status: 'BROADCASTED', 
+          notified_artisans: backupNumbers 
+        }).eq('job_id', job.job_id);
+        
+        // 4. Alert the client that we are widening the search
+        await sendMessage(job.client_phone, '⏳ The requested artisan is currently unavailable. We are now broadcasting your request to other verified artisans nearby...');
+
+        // 5. Blast the backups
+        for (const phone of backupNumbers) {
+          await sendMessage(phone, `🚨 *FAST MATCH ALERT!* 🚨\n\n*Job ID:* #${job.job_id}\n*Category:* ${job.category}\n*Location:* ${job.location}\n*Issue:* ${job.description}\n\n*(First to accept gets the client)*\nReply *ACCEPT ${job.job_id}* to claim this job.`);
+        }
       }
     }
     
