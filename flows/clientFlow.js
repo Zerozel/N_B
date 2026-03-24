@@ -121,7 +121,7 @@ async function handleClientFlow(user, from, text) {
         description,       // {{4}} Issue
         job.job_id         // {{5}} Accept Code
       ];
-      await sendTemplateMessage(phone, 'artisan_job_alert', vars);
+      await sendTemplateMessage(phone, 'artisan_alert_v2', vars);
     }
     return true;
   }

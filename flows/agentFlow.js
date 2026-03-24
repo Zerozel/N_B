@@ -80,7 +80,7 @@ async function handleAgentFlow(user, from, text) {
     
     // Alert the actual client via Template
     const clientVars = [category, location];
-    await sendTemplateMessage(targetPhone, 'agent_booking_alert', clientVars);
+    await sendTemplateMessage(targetPhone, 'agent_alert_v2', clientVars);
 
     // 3. Broadcast to the Artisans via Template
     const artisanNumbers = artisans.map(a => a.phone_number);
@@ -88,7 +88,7 @@ async function handleAgentFlow(user, from, text) {
     
     for (const phone of artisanNumbers) {
       const vars = [job.job_id, category, location, description, job.job_id];
-      await sendTemplateMessage(phone, 'artisan_job_alert', vars);
+      await sendTemplateMessage(phone, 'artisan_alert_v2', vars);
     }
     
     return true;
