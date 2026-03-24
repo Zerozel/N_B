@@ -27,7 +27,7 @@ async function handleAgentFlow(user, from, text) {
     return true;
   }
 
-  if (user.status.startsWith('PROXY_CAT_')) {
+ if (user.status.startsWith('PROXY_CAT_')) {
     const targetPhone = user.status.replace('PROXY_CAT_', '');
     const map = { '1': 'Electrical', '2': 'Plumbing', '3': 'Carpentry' };
     const category = map[cleanText];
@@ -37,17 +37,30 @@ async function handleAgentFlow(user, from, text) {
       return true;
     }
 
-    await supabase.from('users').update({ status: `PROXY_LOC_${targetPhone}_${category}` }).eq('phone_number', from);
+    // Note: Using '|' separator here to protect against complex location strings
+    await supabase.from('users').update({ status: `PROXY_LOC|${targetPhone}|${category}` }).eq('phone_number', from);
     await sendMessage(from, `✅ ${category} selected.\n\nWhat is the exact location/address for the client?\n\n*(Type "cancel" to exit)*`);
     return true;
   }
 
-  if (user.status.startsWith('PROXY_LOC_')) {
-    const parts = user.status.split('_');
-    const targetPhone = parts[2];
-    const category = parts[3];
+  if (user.status.startsWith('PROXY_LOC|')) {
+    const parts = user.status.split('|');
+    const targetPhone = parts[1];
+    const category = parts[2];
     const location = cleanText;
-    const description = `Proxy booking via Agent +${from}`;
+
+    // Ask for the complaint/description before finalizing
+    await supabase.from('users').update({ status: `PROXY_DESC|${targetPhone}|${category}|${location}` }).eq('phone_number', from);
+    await sendMessage(from, `Got the location.\n\nFinally, briefly describe the exact issue or complaint (e.g., "Sparks from the DB board"):\n\n*(Type "cancel" to exit)*`);
+    return true;
+  }
+
+  if (user.status.startsWith('PROXY_DESC|')) {
+    const parts = user.status.split('|');
+    const targetPhone = parts[1];
+    const category = parts[2];
+    const location = parts[3];
+    const description = `${cleanText} (Proxy via Agent +${from})`;
 
     // 1. Create the Ticket
     const { data: job, error: jobError } = await supabase.from('job_tickets').insert([{
@@ -63,26 +76,25 @@ async function handleAgentFlow(user, from, text) {
       return true;
     }
 
-    // --- BUG 2 FIX: THE MISSING ARTISAN SEARCH ---
+    // 2. Search for Artisans
     const { data: artisans } = await supabase.from('artisans').select('*').eq('category', category).eq('is_available', true).limit(3);
     
     if (!artisans || artisans.length === 0) {
-      // If no artisans, fail the job and alert the agent
       await supabase.from('job_tickets').update({ status: 'FAILED_NO_ARTISANS' }).eq('job_id', job.job_id);
       await supabase.from('users').update({ status: 'IDLE' }).eq('phone_number', from);
       await sendMessage(from, `⚠️ We are sorry, but there are no available *${category}* artisans right now. The proxy booking could not be completed.`);
       return true;
     }
 
-    // 2. Artisans found! Reset Agent and send success alerts
+    // 3. Success & Alerts
     await supabase.from('users').update({ status: 'IDLE' }).eq('phone_number', from);
     await sendMessage(from, `🎯 *Proxy Booking Successful!*\n\nJob #${job.job_id} has been broadcasted to available artisans. You will be credited for this referral.`);
     
-    // Alert the actual client via Template
+    // Alert Client
     const clientVars = [category, location];
     await sendTemplateMessage(targetPhone, 'agent_alert_v2', clientVars);
 
-    // 3. Broadcast to the Artisans via Template
+    // Broadcast to Artisans
     const artisanNumbers = artisans.map(a => a.phone_number);
     await supabase.from('job_tickets').update({ status: 'BROADCASTED', notified_artisans: artisanNumbers }).eq('job_id', job.job_id);
     
