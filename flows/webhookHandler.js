@@ -3,11 +3,18 @@ const { handleClientFlow } = require('./clientFlow');
 const { handleArtisanFlow } = require('./artisanFlow');
 const { handleOnboardingFlow } = require('./onboardingFlow');
 const { sendMessage } = require('../utils/whatsapp');
+const { handleAgentFlow } = require('./agentFlow');
+const { handleAdminFlow } = require('./adminFlow');
 
 async function processIncomingMessage(from, text) {
   try {
     let cleanText = text.trim();
     const lowerText = cleanText.toLowerCase();
+    
+    
+    // --- ADMIN BYPASS ---
+    const isAdminHandled = await handleAdminFlow(from, cleanText);
+    if (isAdminHandled) return;
 
     // --- 0. THE GLOBAL KILL SWITCH ---
     // This intercepts the message BEFORE any flow can see it.
@@ -53,6 +60,9 @@ async function processIncomingMessage(from, text) {
 
     const isArtisanHandled = await handleArtisanFlow(user, from, cleanText);
     if (isArtisanHandled) return;
+    
+    const isAgentHandled = await handleAgentFlow(user, from, cleanText);
+    if (isAgentHandled) return;
 
     const isClientHandled = await handleClientFlow(user, from, cleanText);
     if (isClientHandled) return;

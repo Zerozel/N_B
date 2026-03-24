@@ -1,5 +1,5 @@
 const supabase = require('../config/supabase');
-const { sendMessage } = require('../utils/whatsapp');
+const { sendMessage, sendTemplateMessage } = require('../utils/whatsapp');
 const { extractNumber, detectCategoryIntent } = require('../utils/fuzzyRouter');
 
 // ⚠️ Ensure this is your exact personal number with the country code (no + sign)
@@ -17,7 +17,7 @@ async function handleClientFlow(user, from, text) {
     await sendMessage(CUSTOMER_SERVICE_NUMBER, `🚨 *NEW NEXA ENQUIRY*\n\n*From:* +${from}\n*Message:* "${cleanText}"\n\n_Click their number above to chat with them directly._`);
     
     // 3. Send the confirmation to the user
-    await sendMessage(from, '✅ *Your enquiry has been received!*\n\nA human agent will review this shortly. For immediate assistance, please chat directly with Nexa Customer Service at: *09045955670*\n\n(Reply "menu" anytime to start a new request).');
+    await sendMessage(from, '✅ *Your enquiry has been received!*\n\nA human agent will review this shortly. For immediate assistance, please chat directly with Nexa Customer Service at: *2347079722171*\n\n(Reply "menu" anytime to start a new request).');
     
     return true;
   }
@@ -45,7 +45,7 @@ async function handleClientFlow(user, from, text) {
     } else if (choice === '2') {
       // Sends them into the Enquiry Mode for their next message
       await supabase.from('users').update({ status: 'ENQUIRY_MODE' }).eq('phone_number', from);
-      await sendMessage(from, 'Please type your enquiry below. A Nexa agent will review it shortly. (Reply "cancel" at any time to go back).\n\n*Direct Customer Service: 09045955670*');
+      await sendMessage(from, 'Please type your enquiry below. A Nexa agent will review it shortly. (Reply "cancel" at any time to go back).\n\n*Direct Customer Service: 2347079722171*');
     } else {
       // Updated warning with the kill phrase instruction
       await sendMessage(from, 'Welcome back to *Nexa*! 🛠️\n\nAre you looking for a service or just asking a question?\nReply with *1* or *2*.\n\n*(Type "cancel" to exit)*');
@@ -95,6 +95,7 @@ async function handleClientFlow(user, from, text) {
     
     if (jobError) throw jobError;
     
+    await sendMessage(CUSTOMER_SERVICE_NUMBER, `🟢 *ADMIN ALERT: NEW JOB PENDING* 🟢\n\n*Job ID:* #${job.job_id}\n*Category:* ${category}\n*Location:* ${location}\n*Client:* +${from}\n\n_Broadcasting to artisans now..._`);
     await supabase.from('users').update({ status: 'IDLE' }).eq('phone_number', from);
     await sendMessage(from, '⚙️ *Request received!* Processing your ticket...\nSearching for available artisans nearby. We will notify you once a match is found.');
     
@@ -104,15 +105,23 @@ async function handleClientFlow(user, from, text) {
     
     if (!artisans || artisans.length === 0) {
       await supabase.from('job_tickets').update({ status: 'FAILED_NO_ARTISANS' }).eq('job_id', job.job_id);
-      await sendMessage(from, '⚠️ We are sorry, but there are no available artisans in that category right now. Please try again later.\n\n💬 *For further assistance, chat with Nexa Customer Service: 09045955670*');
+      await sendMessage(from, '⚠️ We are sorry, but there are no available artisans in that category right now. Please try again later.\n\n💬 *For further assistance, chat with Nexa Customer Service: 2347079722171*');
       return true;
     }
     
     const artisanNumbers = artisans.map(a => a.phone_number);
     await supabase.from('job_tickets').update({ status: 'BROADCASTED', notified_artisans: artisanNumbers }).eq('job_id', job.job_id);
     
+    // NEW TEMPLATE BROADCAST (Bypasses 24-hour block)
     for (const phone of artisanNumbers) {
-      await sendMessage(phone, `🚨 *FAST MATCH ALERT!* 🚨\n\n*Job ID:* #${job.job_id}\n*Category:* ${category}\n*Location:* ${location}\n*Issue:* ${description}\n\n*(First to accept gets the client)*\nReply *ACCEPT ${job.job_id}* to claim this job.`);
+      const vars = [
+        job.job_id,        // {{1}} Reference
+        category,          // {{2}} Type
+        location,          // {{3}} Location
+        description,       // {{4}} Issue
+        job.job_id         // {{5}} Accept Code
+      ];
+      await sendTemplateMessage(phone, 'artisan_job_alert', vars);
     }
     return true;
   }

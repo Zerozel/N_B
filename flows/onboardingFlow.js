@@ -22,6 +22,16 @@ async function handleOnboardingFlow(user, from, text) {
     await sendMessage(from, '🛠️ *Welcome to the Nexa Artisan Network!*\n\nLet\'s get you registered. Please reply with your Full Name or Business Name.');
     return true;
   }
+  // --- AGENT REGISTRATION TRIGGER ---
+  if (upperText === 'JOIN AGENT') {
+    await supabase.from('users').update({ 
+      status: 'IDLE', 
+      user_type: 'AGENT' 
+    }).eq('phone_number', from);
+    
+    await sendMessage(from, '🤝 *Welcome to the Nexa Broker Network!*\n\nYou are now an authorized Agent. \n\nTo book a service for a client and earn your commission, simply reply with the word: *NEXA*');
+    return true;
+  }
 
   // --- STEP 1: CAPTURE NAME ---
   if (user.status === 'ONBOARDING_NAME') {
