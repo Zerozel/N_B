@@ -41,7 +41,7 @@ async function sendTemplateMessage(toPhoneNumber, templateName, variables) {
     template: {
       name: templateName,
       // CHANGED: Forcing en_US to bypass Meta's hidden language mismatch bug
-      language: { code: 'en_GB' }, 
+      language: { code: 'en_US' }, 
       components: [
         {
           type: 'body',
