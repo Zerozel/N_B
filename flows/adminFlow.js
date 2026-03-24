@@ -9,6 +9,23 @@ async function handleAdminFlow(from, text) {
   if (from !== ADMIN_NUMBER) return false; 
 
   const upperText = text.trim().toUpperCase();
+  // --- THE UNBLOCK COMMAND ---
+  // Usage: Admin texts "UNBLOCK 2348012345678"
+  if (upperText.startsWith('UNBLOCK ')) {
+    const targetNumber = cleanText.replace('UNBLOCK ', '').replace('unblock ', '').trim();
+    
+    const { error } = await supabase
+      .from('artisans')
+      .update({ is_available: true })
+      .eq('phone_number', targetNumber);
+
+    if (error) {
+      await sendMessage(from, `❌ Database error. Could not unblock +${targetNumber}.`);
+    } else {
+      await sendMessage(from, `🔓 Artisan +${targetNumber} is now UNBLOCKED and available to receive job broadcasts again.`);
+    }
+    return true;
+  }
 
   // --- THE SECRET TRIGGER ---
   if (upperText === 'NEXA LOGS') {
