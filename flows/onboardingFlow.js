@@ -80,7 +80,7 @@ async function handleOnboardingFlow(user, from, text) {
 
     // 3. Generate the Custom Marketing Link
     // Replace with your actual Nexa Business Number
-    const nexaNumber = process.env.META_PHONE_ID_OR_YOUR_NEXA_NUMBER || '2349032925721'; 
+    const nexaNumber = process.env.META_PHONE_ID_OR_YOUR_NEXA_NUMBER || '2348113343613'; 
     const encodedMessage = encodeURI(`Hi Nexa, I need a ${category} service. Ref: ${artisanId}`);
     const waLink = `https://wa.me/${nexaNumber}?text=${encodedMessage}`;
 
