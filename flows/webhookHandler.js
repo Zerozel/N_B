@@ -26,11 +26,16 @@ async function processIncomingMessage(from, messageObj) {
       payload = messageObj.interactive.type === 'button_reply' 
         ? messageObj.interactive.button_reply.id 
         : messageObj.interactive.list_reply.id;
+    } else if (messageObj.type === 'button') {
+      // 🚨 THE FIX: Catch Meta Template Quick Replies
+      isButton = true;
+      payload = messageObj.button.payload || messageObj.button.text;
     } else {
       return; // Ignore non-text/non-interactive media
     }
-
+    
     const upperPayload = payload.toUpperCase();
+    // ... the rest of the file continues normally
 
     // 2. GLOBAL SYSTEM COMMANDS (Kill Switch)
     if (upperPayload === 'CMD_CANCEL' || upperPayload === 'MENU' || upperPayload === 'CANCEL') {
