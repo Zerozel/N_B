@@ -87,11 +87,20 @@ async function triggerMatchmaker(jobId) {
 /**
  * Helper function to gracefully handle a dry waterfall.
  */
+/**
+ * Helper function to gracefully handle a dry waterfall.
+ */
 async function handleNoArtisans(job) {
   console.log(`❌ Waterfall dry for Job #${job.job_id}. FAILED.`);
   await supabase.from('jobs').update({ status: 'FAILED_NO_ARTISANS', updated_at: new Date().toISOString() }).eq('job_id', job.job_id);
   await supabase.from('profiles').update({ current_status: 'IDLE' }).eq('phone_number', job.client_phone);
-  await sendMessage(job.client_phone, '⚠️ We are sorry, but all our verified artisans are currently busy or unavailable in your zone. Please tap "Menu" to try again later.');
+  
+  // Route to human support to save the transaction
+  const CS_NUMBER = process.env.CUSTOMER_SERVICE_NUMBER || '2347079722171';
+  const preFilledMsg = encodeURIComponent(`Hi Nexa Support, my service request for ${job.category} in ${job.zone} couldn't find an available artisan. Can you help?`);
+  const waLink = `https://wa.me/${CS_NUMBER}?text=${preFilledMsg}`;
+
+  await sendMessage(job.client_phone, `⚠️ *No Available Artisans*\n\nAll our verified ${job.category}s in your zone are currently busy or offline.\n\nPlease chat with our human support team so we can manually dispatch someone for you:\n\n🔗 ${waLink}`);
 }
 
 module.exports = { triggerMatchmaker };
