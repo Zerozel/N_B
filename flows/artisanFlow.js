@@ -1,5 +1,4 @@
 const supabase = require('../config/supabase');
-// V2 TEMPLATE UPGRADE: Added sendTemplateMessage
 const { sendMessage, sendButtonMessage, sendTemplateMessage } = require('../utils/whatsapp');
 
 /**
@@ -7,17 +6,27 @@ const { sendMessage, sendButtonMessage, sendTemplateMessage } = require('../util
  */
 async function handleArtisanFlow(profile, payload, isButton) {
   const from = profile.phone_number;
+  
+  // Normalize the payload to uppercase so we catch 'accept', 'ACCEPT', 'Accept_Match', etc.
+  const command = typeof payload === 'string' ? payload.toUpperCase() : '';
 
-  // --- 1. JOB ACCEPTANCE (Template Match) ---
-  if (isButton && payload === '✅ Accept Match') {
+  // --- 1. JOB ACCEPTANCE (Fuzzy Template Match) ---
+  // 🚨 THE FIX: Catch any payload containing 'ACCEPT' or the Checkmark emoji
+  if (isButton && (command.includes('ACCEPT') || command.includes('✅'))) {
     
     // 1a. Find the artisan's category to match the right job
     const { data: artisan } = await supabase.from('artisan_meta').select('*').eq('phone_number', from).single();
     
+    // Failsafe: If the artisan somehow isn't in the meta table, stop the crash
+    if (!artisan) {
+      await sendMessage(from, '⚠️ Error: We could not find your verified trade category. Please text "MENU" and contact support.');
+      return true;
+    }
+
     // 1b. Find the most recent active job looking for this category
     const { data: job } = await supabase.from('jobs')
       .select('*')
-      .like('status', 'SEARCHING_%')
+      .like('status', 'SEARCHING_%') // Catches SEARCHING_T1, SEARCHING_T2, and SEARCHING_REFERRED
       .eq('category', artisan.category)
       .order('created_at', { ascending: false })
       .limit(1)
@@ -54,8 +63,8 @@ async function handleArtisanFlow(profile, payload, isButton) {
     return true;
   }
 
-  // --- 2. PASS/REJECT OPTION (Template Match) ---
-  if (isButton && payload === '❌ Pass') {
+  // --- 2. PASS/REJECT OPTION (Fuzzy Template Match) ---
+  if (isButton && (command.includes('PASS') || command.includes('❌') || command.includes('REJECT'))) {
     await sendMessage(from, '👌 Understood. We will keep you in the pool for the next available request.');
     return true;
   }
@@ -69,7 +78,7 @@ async function handleArtisanFlow(profile, payload, isButton) {
     await supabase.from('profiles').update({ current_status: `AWAITING_PRICE_${jobId}` }).eq('phone_number', from);
     
     await sendMessage(from, '📍 *Status: On-Site.*\n\nOnce you have diagnosed the issue and completed the fix, reply to this chat with the *Total Final Amount* in Naira (Numbers only, e.g., 5500).');
-    return true; // THE FIX
+    return true;
   }
 
   // --- 4. PRICE SUBMISSION (Anti-Leakage Start) ---
@@ -83,7 +92,7 @@ async function handleArtisanFlow(profile, payload, isButton) {
     
     if (isNaN(quotedPrice) || quotedPrice <= 0) {
       await sendMessage(from, '❌ Invalid amount. Please reply with only the total price in numbers (e.g., 4000).');
-      return true; // THE FIX
+      return true;
     }
 
     // Save quoted price and trigger client verification
@@ -102,7 +111,6 @@ async function handleArtisanFlow(profile, payload, isButton) {
     const { data: job } = await supabase.from('jobs').select('client_phone').eq('job_id', jobId).single();
     await supabase.from('profiles').update({ current_status: `VERIFY_PRICE_${jobId}` }).eq('phone_number', job.client_phone);
     
-    // V2 TEMPLATE UPGRADE: Replaced sendButtonMessage with sendTemplateMessage
     await sendTemplateMessage(
       job.client_phone,
       'nexa_payment_verify',
