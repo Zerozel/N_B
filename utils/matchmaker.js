@@ -36,31 +36,22 @@ async function triggerMatchmaker(jobId) {
   // Extract the specific tier we are currently targeting (e.g., 'SEARCHING_T2' -> 2)
   const currentTier = parseInt(job.status.split('_T')[1]) || 1;
 
-  // 2. Fetch Available Artisans in that exact Category
-  const { data: artisans } = await supabase
+  // 2. Fetch Available Artisans (Category + Zone explicitly filtered here!)
+  const { data: targetGroupRaw } = await supabase
     .from('artisan_meta')
     .select('artisan_id, phone_number, tier, trust_score')
     .eq('category', job.category)
+    .eq('zone', job.zone)          // <--- THE FIX: Checking the correct table
     .eq('is_available', true);
 
-  if (!artisans || artisans.length === 0) {
+  if (!targetGroupRaw || targetGroupRaw.length === 0) {
     return await handleNoArtisans(job);
   }
 
-  // 3. Cross-reference with the profiles table to ensure they are strictly local to the Zone
-  const { data: localProfiles } = await supabase
-    .from('profiles')
-    .select('phone_number')
-    .eq('zone', job.zone)
-    .in('phone_number', artisans.map(a => a.phone_number));
+  // 3. Isolate the Target Group for the CURRENT Tier
+  let targetGroup = targetGroupRaw.filter(a => a.tier === currentTier);
 
-  const localPhones = localProfiles.map(p => p.phone_number);
-  let localArtisans = artisans.filter(a => localPhones.includes(a.phone_number));
-
-  // 4. Isolate the Target Group for the CURRENT Tier
-  let targetGroup = localArtisans.filter(a => a.tier === currentTier);
-
-  // 5. THE FAST-FORWARD UPGRADE
+  // 4. THE FAST-FORWARD UPGRADE
   if (targetGroup.length === 0) {
     if (currentTier < 3) {
       console.log(`⏩ Tier ${currentTier} is empty for Job #${jobId}. Fast-forwarding to Tier ${currentTier + 1}.`);
@@ -77,13 +68,13 @@ async function triggerMatchmaker(jobId) {
     }
   }
 
-  // 6. Score and Sort the Target Group
+  // 5. Score and Sort the Target Group
   targetGroup = targetGroup.map(a => ({
     ...a,
     score: calculateMatchScore(a)
   })).sort((a, b) => b.score - a.score).slice(0, 3); // Slice limits the blast to the top 3 max to prevent spam
 
-  // 7. Blast the Target Group with Meta Templates (Bypasses 24h limit)
+  // 6. Blast the Target Group with Meta Templates (Bypasses 24h limit)
   for (const artisan of targetGroup) {
     await sendTemplateMessage(
       artisan.phone_number,
