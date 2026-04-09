@@ -8,7 +8,8 @@ const CUSTOMER_SERVICE_NUMBER = process.env.CUSTOMER_SERVICE_NUMBER || '23470797
 /**
  * Handles all Client-side interactions including service requests and payment verification.
  */
-async function handleClientFlow(profile, payload, isButton) {
+// Added referredBy to the parameters here:
+async function handleClientFlow(profile, payload, isButton, referredBy) {
   const from = profile.phone_number;
 
   // --- 1. ENQUIRY MODE ---
@@ -17,6 +18,34 @@ async function handleClientFlow(profile, payload, isButton) {
     await sendMessage(CUSTOMER_SERVICE_NUMBER, `🚨 *NEW NEXA ENQUIRY*\n*From:* +${from}\n*Message:* "${payload}"`);
     await sendMessage(from, '✅ *Your enquiry has been received!*\n\nA human agent will review this shortly. For immediate assistance, chat with us at: 2347079722171');
     return true;
+  }
+
+  // --- 1.5. V2 DEEP-LINK FAST-TRACK ---
+  if (referredBy && (profile.current_status === 'NEW' || profile.current_status === 'IDLE')) {
+    // Extract the category from their pre-filled WhatsApp message
+    const catMatch = payload.match(/need a (\w+) service/i);
+    const category = catMatch ? catMatch[1].charAt(0).toUpperCase() + catMatch[1].slice(1).toLowerCase() : 'Unknown';
+
+    // Create the DRAFT job and tag their specific artisan!
+    const { data: job, error } = await supabase.from('jobs').insert([{
+      client_phone: from,
+      category: category,
+      status: 'DRAFT',
+      referred_artisan: referredBy // Save the artisan's NX- ID here
+    }]).select().single();
+
+    if (error) throw error;
+
+    await supabase.from('profiles').update({ current_status: `AWAITING_ZONE_${job.job_id}` }).eq('phone_number', from);
+
+    const zones = [
+      { title: "Campus", rows: [{ id: "ZONE_GIDAN_KWANO", title: "Gidan Kwano" }, { id: "ZONE_BOSSO", title: "Bosso" }] },
+      { title: "Town", rows: [{ id: "ZONE_MINNA_TOWN", title: "Minna Town" }] }
+    ];
+
+    // Greet them and skip straight to Zone selection
+    await sendListMessage(from, `👋 *Welcome to Nexa!*\n\nWe see you were referred by a verified *${category}* artisan.\n\nTo finalize your request, please select your location:`, "Select Zone", zones);
+    return true; 
   }
 
   // --- 2. ENTRY POINT / MAIN MENU ---

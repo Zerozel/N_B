@@ -27,7 +27,7 @@ async function processIncomingMessage(from, messageObj) {
         ? messageObj.interactive.button_reply.id 
         : messageObj.interactive.list_reply.id;
     } else if (messageObj.type === 'button') {
-      // 🚨 THE FIX: Catch Meta Template Quick Replies
+      // 🚨 Catch Meta Template Quick Replies
       isButton = true;
       payload = messageObj.button.payload || messageObj.button.text;
     } else {
@@ -35,7 +35,6 @@ async function processIncomingMessage(from, messageObj) {
     }
     
     const upperPayload = payload.toUpperCase();
-    // ... the rest of the file continues normally
 
     // 2. GLOBAL SYSTEM COMMANDS (Kill Switch)
     if (upperPayload === 'CMD_CANCEL' || upperPayload === 'MENU' || upperPayload === 'CANCEL') {
@@ -99,8 +98,8 @@ async function processIncomingMessage(from, messageObj) {
       if (handled) return;
     }
     
-    // Default: Route as a Client
-    const handledByClient = await handleClientFlow(profile, payload, isButton);
+    // Default: Route as a Client (Now passing the referredBy ID!)
+    const handledByClient = await handleClientFlow(profile, payload, isButton, referredBy);
     if (handledByClient) return;
 
     // 6. ULTIMATE FALLBACK (Upgraded UX)
