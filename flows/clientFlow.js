@@ -1,132 +1,236 @@
 const supabase = require('../config/supabase');
-const { sendMessage, sendTemplateMessage } = require('../utils/whatsapp');
-const { extractNumber, detectCategoryIntent } = require('../utils/fuzzyRouter');
+const { triggerMatchmaker } = require('../utils/matchmaker');
+const { sendMessage, sendButtonMessage, sendListMessage } = require('../utils/whatsapp');
 
-// ⚠️ Ensure this is your exact personal number with the country code (no + sign)
-const CUSTOMER_SERVICE_NUMBER = '2347079722171'; 
+// Admin alert number for enquiries and disputes
+const CUSTOMER_SERVICE_NUMBER = process.env.CUSTOMER_SERVICE_NUMBER || '2347079722171'; 
 
-async function handleClientFlow(user, from, text) {
-  const cleanText = text.trim();
+/**
+ * Handles all Client-side interactions including service requests and payment verification.
+ */
+async function handleClientFlow(profile, payload, isButton) {
+  const from = profile.phone_number;
 
-  // --- ENQUIRY MODE LOOP (Fixed & Optimized) ---
-  if (user.status === 'ENQUIRY_MODE') {
-    // 1. Instantly release the user back to IDLE so they don't get stuck
-    await supabase.from('users').update({ status: 'IDLE' }).eq('phone_number', from);
-    
-    // 2. Fire the alert to YOUR phone
-    await sendMessage(CUSTOMER_SERVICE_NUMBER, `🚨 *NEW NEXA ENQUIRY*\n\n*From:* +${from}\n*Message:* "${cleanText}"\n\n_Click their number above to chat with them directly._`);
-    
-    // 3. Send the confirmation to the user
-    await sendMessage(from, '✅ *Your enquiry has been received!*\n\nA human agent will review this shortly. For immediate assistance, please chat directly with Nexa Customer Service at: *2347079722171*\n\n(Reply "menu" anytime to start a new request).');
-    
+  // --- 1. ENQUIRY MODE ---
+  if (profile.current_status === 'ENQUIRY_MODE') {
+    await supabase.from('profiles').update({ current_status: 'IDLE' }).eq('phone_number', from);
+    await sendMessage(CUSTOMER_SERVICE_NUMBER, `🚨 *NEW NEXA ENQUIRY*\n*From:* +${from}\n*Message:* "${payload}"`);
+    await sendMessage(from, '✅ *Your enquiry has been received!*\n\nA human agent will review this shortly. For immediate assistance, chat with us at: 2347079722171');
     return true;
   }
 
-  // --- PHASE H: THE INTAKE FUNNEL ---
-  if (user.status === 'NEW' || user.status === 'IDLE') {
-    const intentCategory = detectCategoryIntent(cleanText);
-    if (intentCategory) {
-      await supabase.from('users').update({ status: `AWAITING_LOCATION_${intentCategory}` }).eq('phone_number', from);
-      await sendMessage(from, `✅ We noticed you need a *${intentCategory}* service. Let's get that sorted.\n\nPlease reply with your exact location/address (e.g., Block A, Campus Hostel).`);
+  // --- 2. ENTRY POINT / MAIN MENU ---
+  if (profile.current_status === 'NEW' || profile.current_status === 'IDLE') {
+    if (payload === 'CMD_REQ_SERVICE') {
+      await supabase.from('profiles').update({ current_status: 'AWAITING_CATEGORY' }).eq('phone_number', from);
+      return await sendButtonMessage(
+        from,
+        '🛠️ What type of artisan do you need right now?',
+        [
+          { id: 'CAT_ELECTRICAL', title: 'Electrical' },
+          { id: 'CAT_PLUMBING', title: 'Plumbing' },
+          { id: 'CAT_CARPENTRY', title: 'Carpentry' }
+        ]
+      );
+    }
+    
+    if (payload === 'CMD_ENQUIRY') {
+      await supabase.from('profiles').update({ current_status: 'ENQUIRY_MODE' }).eq('phone_number', from);
+      await sendMessage(from, 'Please type your enquiry below. A Nexa agent will review it shortly.');
       return true;
     }
 
-    await supabase.from('users').update({ status: 'AWAITING_INTAKE_TYPE' }).eq('phone_number', from);
-    await sendMessage(from, 'Welcome to *Nexa*! 🛠️\n\nAre you looking for a service or just asking a question?\nReply with a number:\n1️⃣ Service Call\n2️⃣ Make an Enquiry');
-    return true;
+    // Default Greeting
+    return await sendButtonMessage(
+      from,
+      'Welcome to *Nexa*! 🛠️\n\nHow can we help you today?',
+      [
+        { id: 'CMD_REQ_SERVICE', title: 'Request Service' },
+        { id: 'CMD_ENQUIRY', title: 'Make Enquiry' }
+      ]
+    );
   }
 
-  if (user.status === 'AWAITING_INTAKE_TYPE') {
-    const choice = extractNumber(cleanText, ['1', '2']); 
-    
-    if (choice === '1') {
-      await supabase.from('users').update({ status: 'AWAITING_CATEGORY' }).eq('phone_number', from);
-      await sendMessage(from, 'Great. What type of artisan do you need right now?\n\n1️⃣ Electrical\n2️⃣ Plumbing\n3️⃣ Carpentry');
-    } else if (choice === '2') {
-      // Sends them into the Enquiry Mode for their next message
-      await supabase.from('users').update({ status: 'ENQUIRY_MODE' }).eq('phone_number', from);
-      await sendMessage(from, 'Please type your enquiry below. A Nexa agent will review it shortly. (Reply "cancel" at any time to go back).\n\n*Direct Customer Service: 2347079722171*');
-    } else {
-      // Updated warning with the kill phrase instruction
-      await sendMessage(from, 'Welcome back to *Nexa*! 🛠️\n\nAre you looking for a service or just asking a question?\nReply with *1* or *2*.\n\n*(Type "cancel" to exit)*');
-    }
-    return true;
-  }
-
-  if (user.status === 'AWAITING_CATEGORY') {
-    let category = detectCategoryIntent(cleanText);
-    
-    if (!category) {
-      const choice = extractNumber(cleanText, ['1', '2', '3']);
-      const map = { '1': 'Electrical', '2': 'Plumbing', '3': 'Carpentry' };
-      category = map[choice];
+  // --- 3. CATEGORY SELECTION ---
+  if (profile.current_status === 'AWAITING_CATEGORY') {
+    if (!isButton || !payload.startsWith('CAT_')) {
+      await sendMessage(from, '❌ Please use the buttons to select a category.');
+      return true;
     }
 
-    if (category) {
-      await supabase.from('users').update({ status: `AWAITING_LOCATION_${category}` }).eq('phone_number', from);
-      await sendMessage(from, `✅ We have registered a *${category}* request.\n\nPlease reply with your exact location/address (e.g., Block A, Campus Hostel).`);
-    } else {
-      // Updated warning with the kill phrase instruction
-      await sendMessage(from, '❌ I didn\'t quite catch that. Please reply with *1*, *2*, or *3*, or just type the service you need.\n\n*(Type "cancel" at any time to exit)*');
-    }
-    return true;
-  }
-
-  if (user.status.startsWith('AWAITING_LOCATION_')) {
-    const category = user.status.split('_')[2];
-    await supabase.from('users').update({ status: `AWAITING_DESC_${category}_${cleanText}` }).eq('phone_number', from);
-    await sendMessage(from, `📍 Location saved.\n\nFinally, please briefly describe the *${category}* issue (e.g., "Sparking wall socket" or "Broken pipe").`);
-    return true;
-  }
-
-  if (user.status.startsWith('AWAITING_DESC_')) {
-    const parts = user.status.split('_');
-    const category = parts[2];
-    const location = parts.slice(3).join('_'); 
-    const description = cleanText;
+    const category = payload.split('_')[1].charAt(0) + payload.split('_')[1].slice(1).toLowerCase();
     
-    const { data: job, error: jobError } = await supabase.from('job_tickets').insert([{
+    // Create the DRAFT job to anchor the process
+    const { data: job, error } = await supabase.from('jobs').insert([{
       client_phone: from,
       category: category,
-      location: location,
-      description: description,
-      status: 'SEARCHING'
+      status: 'DRAFT'
     }]).select().single();
-    
-    if (jobError) throw jobError;
-    
-    await sendMessage(CUSTOMER_SERVICE_NUMBER, `🟢 *ADMIN ALERT: NEW JOB PENDING* 🟢\n\n*Job ID:* #${job.job_id}\n*Category:* ${category}\n*Location:* ${location}\n*Client:* +${from}\n\n_Broadcasting to artisans now..._`);
-    await supabase.from('users').update({ status: 'IDLE' }).eq('phone_number', from);
-    await sendMessage(from, '⚙️ *Request received!* Processing your ticket...\nSearching for available artisans nearby. We will notify you once a match is found.');
-    
-    console.log(`🚨 INITIATING BROADCAST FOR JOB #${job.job_id} | Category: ${category}`);
-    
-    const { data: artisans } = await supabase.from('artisans').select('*').eq('category', category).eq('is_available', true).limit(3);
-    
-    if (!artisans || artisans.length === 0) {
-      await supabase.from('job_tickets').update({ status: 'FAILED_NO_ARTISANS' }).eq('job_id', job.job_id);
-      await sendMessage(from, '⚠️ We are sorry, but there are no available artisans in that category right now. Please try again later.\n\n💬 *For further assistance, chat with Nexa Customer Service: 2347079722171*');
-      return true;
-    }
-    
-    const artisanNumbers = artisans.map(a => a.phone_number);
-    await supabase.from('job_tickets').update({ status: 'BROADCASTED', notified_artisans: artisanNumbers }).eq('job_id', job.job_id);
-    
-    // NEW TEMPLATE BROADCAST (Bypasses 24-hour block)
-    for (const phone of artisanNumbers) {
-      const vars = [
-        job.job_id,        // {{1}} Reference
-        category,          // {{2}} Type
-        location,          // {{3}} Location
-        description,       // {{4}} Issue
-        job.job_id         // {{5}} Accept Code
-      ];
-      await sendTemplateMessage(phone, 'artisan_alert_v2', vars);
-    }
+
+    if (error) throw error;
+
+    await supabase.from('profiles').update({ current_status: `AWAITING_ZONE_${job.job_id}` }).eq('phone_number', from);
+
+    const zones = [
+      { title: "Campus", rows: [{ id: "ZONE_GIDAN_KWANO", title: "Gidan Kwano" }, { id: "ZONE_BOSSO", title: "Bosso" }] },
+      { title: "Town", rows: [{ id: "ZONE_MINNA_TOWN", title: "Minna Town" }] }
+    ];
+
+    return await sendListMessage(from, `✅ *${category}* selected.\n\nWhere is the location?`, "Select Zone", zones);
+  }
+
+  // --- 4. ZONE SELECTION ---
+  if (profile.current_status.startsWith('AWAITING_ZONE_')) {
+    if (!isButton || !payload.startsWith('ZONE_')) return true;
+
+    const jobId = profile.current_status.split('_')[2];
+    const zone = payload.replace('ZONE_', '').replace('_', ' ');
+
+    await supabase.from('jobs').update({ zone: zone }).eq('job_id', jobId);
+    await supabase.from('profiles').update({ current_status: `AWAITING_DESC_${jobId}` }).eq('phone_number', from);
+
+    await sendMessage(from, `📍 Zone set to *${zone}*.\n\nFinally, briefly describe the issue (e.g., "Burst pipe in kitchen"):`);
     return true;
   }
 
-  return false; 
+  // --- 5. DESCRIPTION & MATCHMAKING ---
+  if (profile.current_status.startsWith('AWAITING_DESC_')) {
+    if (isButton) return true;
+
+    const jobId = profile.current_status.split('_')[2];
+    
+    // Update Job to SEARCHING_T1 to trigger the waterfall
+    await supabase.from('jobs').update({ 
+      problem_description: payload, 
+      status: 'SEARCHING_T1',
+      updated_at: new Date().toISOString()
+    }).eq('job_id', jobId);
+
+    await supabase.from('profiles').update({ current_status: 'IDLE' }).eq('phone_number', from);
+    await sendMessage(from, '⚙️ *Request received!* We are currently matching you with the best verified artisans nearby. Please stay tuned for an update.');
+
+    // Kick off the Matchmaker Algorithm
+    triggerMatchmaker(jobId);
+    return true;
+  }
+  
+  // --- 5.5 PROXY BOOKING CONFIRMATION (TEMPLATE MATCH) ---
+  if (isButton && payload === '✅ Yes, Find Artisan') {
+    // Look up the proxy job waiting for this client
+    const { data: job } = await supabase.from('jobs')
+      .select('*')
+      .eq('client_phone', from)
+      .eq('status', 'PENDING_CLIENT_CONFIRM')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single();
+    
+    if (!job) return true;
+
+    // Client approved it! Now we trigger the waterfall.
+    await supabase.from('jobs').update({ 
+      status: 'SEARCHING_T1',
+      updated_at: new Date().toISOString()
+    }).eq('job_id', job.job_id);
+
+    await sendMessage(from, '⚙️ *Confirmed!* We are now matching you with the best verified artisans nearby. Please stay tuned.');
+    
+    triggerMatchmaker(job.job_id);
+    return true;
+  }
+
+  if (isButton && payload === '❌ Cancel Booking') {
+    const { data: job } = await supabase.from('jobs')
+      .select('job_id')
+      .eq('client_phone', from)
+      .eq('status', 'PENDING_CLIENT_CONFIRM')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single();
+      
+    if (job) {
+      await supabase.from('jobs').update({ status: 'CANCELLED_BY_CLIENT' }).eq('job_id', job.job_id);
+    }
+    
+    return await sendMessage(from, '🛑 Booking cancelled. No artisan will be dispatched. Tap "Menu" if you need anything else.');
+  }
+
+  // --- 6. ANTI-LEAKAGE: PRICE VERIFICATION (TEMPLATE MATCH) ---
+  if (isButton && payload === '✅ Yes, Correct') {
+    // Look up the specific job awaiting verification for this client
+    const { data: job } = await supabase.from('jobs')
+      .select('*')
+      .eq('client_phone', from)
+      .eq('status', 'VERIFYING_PRICE')
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .single();
+    
+    if (!job) return true;
+
+    const jobId = job.job_id;
+    const commission = job.quoted_price * 0.15; // Strictly 15% as per SAD
+
+    // Log transaction in Ledger
+    await supabase.from('ledger').insert([{
+      job_id: jobId,
+      artisan_phone: job.assigned_artisan,
+      total_job_value: job.quoted_price,
+      commission_owed: commission
+    }]);
+
+    // Cleanup: Mark Job Complete & Free Artisan
+    await supabase.from('jobs').update({ status: 'COMPLETED' }).eq('job_id', jobId);
+    await supabase.from('artisan_meta').update({ is_available: true }).eq('phone_number', job.assigned_artisan);
+    await supabase.from('profiles').update({ current_status: 'IDLE' }).eq('phone_number', job.assigned_artisan);
+
+    // Prompt for Rating
+    await supabase.from('profiles').update({ current_status: `AWAITING_RATING_${jobId}` }).eq('phone_number', from);
+    
+    await sendMessage(job.assigned_artisan, `✅ *Payment Verified!*\nCommission of ₦${commission.toFixed(2)} logged. You are now available for new jobs.`);
+
+    const ratingRows = [1, 2, 3, 4, 5].map(s => ({ id: `RATE_${jobId}_${s}`, title: `${"⭐".repeat(s)}`, description: `Rate ${s} Stars` }));
+    return await sendListMessage(from, "✅ *Job Completed!*\n\nPlease rate the service provided:", "Rate Artisan", [{ title: "Rating", rows: ratingRows }]);
+  }
+
+  // --- 7. PRICE DISPUTE (TEMPLATE MATCH) ---
+  if (isButton && payload === '❌ Disputed') {
+    // Look up the specific job awaiting verification for this client
+    const { data: job } = await supabase.from('jobs')
+      .select('*')
+      .eq('client_phone', from)
+      .eq('status', 'VERIFYING_PRICE')
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .single();
+
+    if (!job) return true;
+
+    const jobId = job.job_id;
+
+    await supabase.from('jobs').update({ status: 'DISPUTED' }).eq('job_id', jobId);
+    await supabase.from('profiles').update({ current_status: 'IDLE' }).eq('phone_number', from);
+
+    await sendMessage(from, `⚠️ Dispute logged. An agent will contact you shortly.`);
+    await sendMessage(CUSTOMER_SERVICE_NUMBER, `🚨 *DISPUTE* | Job #${jobId.slice(0,8)} | Client: +${from} | Amount: ₦${job.quoted_price}`);
+    return true;
+  }
+
+  // --- 8. RATING SUBMISSION ---
+  if (isButton && payload.startsWith('RATE_')) {
+    const [, jobId, score] = payload.split('_');
+    
+    // Free the client
+    await supabase.from('profiles').update({ current_status: 'IDLE' }).eq('phone_number', from);
+    
+    return await sendButtonMessage(
+      from, 
+      `🌟 Thanks! You rated this service ${score} stars.`,
+      [{ id: 'CMD_REQ_SERVICE', title: 'New Request' }]
+    );
+  }
+
+  return false;
 }
 
 module.exports = { handleClientFlow };

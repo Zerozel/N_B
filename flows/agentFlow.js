@@ -1,109 +1,123 @@
 const supabase = require('../config/supabase');
-const { sendMessage, sendTemplateMessage } = require('../utils/whatsapp');
+const { sendMessage, sendButtonMessage, sendListMessage } = require('../utils/whatsapp');
+const { triggerMatchmaker } = require('../utils/matchmaker');
 
-async function handleAgentFlow(user, from, text) {
-  if (user.user_type !== 'AGENT') return false; 
+/**
+ * Handles the Proxy Booking flow for authorized Nexa Agents.
+ * Allows brokers to book services on behalf of clients while retaining referral tracking.
+ */
+async function handleAgentFlow(profile, payload, isButton) {
+  const from = profile.phone_number;
 
-  const cleanText = text.trim();
-  const upperText = cleanText.toUpperCase();
-
-  // --- BUG 1 FIX: THE TRIGGER OVERRIDE ---
-  // Removed the IDLE requirement. This now intercepts immediately.
-  if (upperText === 'NEXA') {
-    await supabase.from('users').update({ status: 'PROXY_PHONE' }).eq('phone_number', from);
-    await sendMessage(from, '📱 *Agent Proxy Initiated*\n\nPlease reply with the exact WhatsApp number of the client you are booking for (e.g., 2348012345678):\n\n*(Type "cancel" at anytime to abort)*');
-    return true;
+  // --- 1. PROXY INITIATION ---
+  // Triggered by the keyword "NEXA" or an Admin/Menu button
+  if (payload === 'NEXA' || payload === 'CMD_PROXY_BOOK') {
+    await supabase.from('profiles').update({ current_status: 'PROXY_PHONE' }).eq('phone_number', from);
+    return await sendMessage(from, '📱 *Agent Proxy Initiated*\n\nPlease reply with the WhatsApp number of the client you are booking for (e.g., 2348012345678):');
   }
 
-  if (user.status === 'PROXY_PHONE') {
+  // --- 2. CAPTURE CLIENT PHONE & SHOW CATEGORIES ---
+  if (profile.current_status === 'PROXY_PHONE') {
+    if (isButton) return true; // Only accept typed text for phone numbers
+
+    // Basic Nigerian/International phone format validation
     const phoneRegex = /^\d{11,15}$/;
-    if (!phoneRegex.test(cleanText)) {
-      await sendMessage(from, '❌ Invalid format. Please enter only numbers with the country code (e.g., 2348012345678).\n\n*(Type "cancel" to exit)*');
-      return true;
+    if (!phoneRegex.test(payload)) {
+      return await sendMessage(from, '❌ Invalid format. Please enter only digits including country code (e.g., 234...).');
     }
     
-    await supabase.from('users').update({ status: `PROXY_CAT_${cleanText}` }).eq('phone_number', from);
-    await sendMessage(from, 'Got it. What service does this client need?\n\n1️⃣ Electrical\n2️⃣ Plumbing\n3️⃣ Carpentry\n\n*(Type "cancel" to exit)*');
-    return true;
+    // Store target phone in the status string to pass to the next step
+    await supabase.from('profiles').update({ current_status: `PROXY_CAT_${payload}` }).eq('phone_number', from);
+    
+    return await sendButtonMessage(
+      from,
+      `✅ *Target Client:* +${payload}\n\nWhat service does this client require?`,
+      [
+        { id: `AG_CAT_ELECTRICAL`, title: 'Electrical' },
+        { id: `AG_CAT_PLUMBING`, title: 'Plumbing' },
+        { id: `AG_CAT_CARPENTRY`, title: 'Carpentry' }
+      ]
+    );
   }
 
- if (user.status.startsWith('PROXY_CAT_')) {
-    const targetPhone = user.status.replace('PROXY_CAT_', '');
-    const map = { '1': 'Electrical', '2': 'Plumbing', '3': 'Carpentry' };
-    const category = map[cleanText];
+  // --- 3. CREATE DRAFT JOB & SHOW ZONES ---
+  if (profile.current_status.startsWith('PROXY_CAT_')) {
+    if (!isButton || !payload.startsWith('AG_CAT_')) return true;
 
-    if (!category) {
-      await sendMessage(from, '❌ Please reply with *1*, *2*, or *3*.\n\n*(Type "cancel" to exit)*');
-      return true;
-    }
+    const targetPhone = profile.current_status.replace('PROXY_CAT_', '');
+    const categoryMap = { 'AG_CAT_ELECTRICAL': 'Electrical', 'AG_CAT_PLUMBING': 'Plumbing', 'AG_CAT_CARPENTRY': 'Carpentry' };
+    const category = categoryMap[payload];
 
-    // Note: Using '|' separator here to protect against complex location strings
-    await supabase.from('users').update({ status: `PROXY_LOC|${targetPhone}|${category}` }).eq('phone_number', from);
-    await sendMessage(from, `✅ ${category} selected.\n\nWhat is the exact location/address for the client?\n\n*(Type "cancel" to exit)*`);
-    return true;
-  }
-
-  if (user.status.startsWith('PROXY_LOC|')) {
-    const parts = user.status.split('|');
-    const targetPhone = parts[1];
-    const category = parts[2];
-    const location = cleanText;
-
-    // Ask for the complaint/description before finalizing
-    await supabase.from('users').update({ status: `PROXY_DESC|${targetPhone}|${category}|${location}` }).eq('phone_number', from);
-    await sendMessage(from, `Got the location.\n\nFinally, briefly describe the exact issue or complaint (e.g., "Sparks from the DB board"):\n\n*(Type "cancel" to exit)*`);
-    return true;
-  }
-
-  if (user.status.startsWith('PROXY_DESC|')) {
-    const parts = user.status.split('|');
-    const targetPhone = parts[1];
-    const category = parts[2];
-    const location = parts[3];
-    const description = `${cleanText} (Proxy via Agent +${from})`;
-
-    // 1. Create the Ticket
-    const { data: job, error: jobError } = await supabase.from('job_tickets').insert([{
+    // Initialize DRAFT job and tag the agent for commission tracking
+    const { data: job, error } = await supabase.from('jobs').insert([{
       client_phone: targetPhone,
       category: category,
-      location: location,
-      description: description,
-      status: 'SEARCHING'
+      status: 'DRAFT'
+      // Note: If you add an 'agent_ref' column to 'jobs', insert 'from' here
     }]).select().single();
 
-    if (jobError) {
-      await sendMessage(from, '⚠️ Database error. Please try again.\n\n*(Type "cancel" to exit)*');
-      return true;
-    }
+    if (error) throw error;
 
-    // 2. Search for Artisans
-    const { data: artisans } = await supabase.from('artisans').select('*').eq('category', category).eq('is_available', true).limit(3);
-    
-    if (!artisans || artisans.length === 0) {
-      await supabase.from('job_tickets').update({ status: 'FAILED_NO_ARTISANS' }).eq('job_id', job.job_id);
-      await supabase.from('users').update({ status: 'IDLE' }).eq('phone_number', from);
-      await sendMessage(from, `⚠️ We are sorry, but there are no available *${category}* artisans right now. The proxy booking could not be completed.`);
-      return true;
-    }
+    await supabase.from('profiles').update({ current_status: `PROXY_ZONE_${job.job_id}` }).eq('phone_number', from);
 
-    // 3. Success & Alerts
-    await supabase.from('users').update({ status: 'IDLE' }).eq('phone_number', from);
-    await sendMessage(from, `🎯 *Proxy Booking Successful!*\n\nJob #${job.job_id} has been broadcasted to available artisans. You will be credited for this referral.`);
-    
-    // Alert Client
-    const clientVars = [category, location];
-    await sendTemplateMessage(targetPhone, 'agent_alert_v2', clientVars);
+    const zones = [
+      {
+        title: "Operational Zones",
+        rows: [
+          { id: `AG_ZONE_GIDAN_KWANO`, title: "Gidan Kwano" },
+          { id: `AG_ZONE_BOSSO`, title: "Bosso" },
+          { id: `AG_ZONE_MINNA_TOWN`, title: "Minna Town" }
+        ]
+      }
+    ];
 
-    // Broadcast to Artisans
-    const artisanNumbers = artisans.map(a => a.phone_number);
-    await supabase.from('job_tickets').update({ status: 'BROADCASTED', notified_artisans: artisanNumbers }).eq('job_id', job.job_id);
+    return await sendListMessage(from, `✅ *${category}* selected.\n\nSelect the client's location zone:`, "Select Zone", zones);
+  }
+
+  // --- 4. CAPTURE ZONE & ASK FOR DESCRIPTION ---
+  if (profile.current_status.startsWith('PROXY_ZONE_')) {
+    if (!isButton || !payload.startsWith('AG_ZONE_')) return true;
+
+    const jobId = profile.current_status.split('_')[2];
+    const zone = payload.replace('AG_ZONE_', '').replace('_', ' ');
+
+    await supabase.from('jobs').update({ zone: zone }).eq('job_id', jobId);
+    await supabase.from('profiles').update({ current_status: `PROXY_DESC_${jobId}` }).eq('phone_number', from);
+
+    return await sendMessage(from, `📍 *Zone:* ${zone}.\n\nBriefly describe the exact complaint (e.g., "Main switch tripping"):`);
+  }
+
+ // --- 5. FINALIZE & REQUEST CLIENT CONFIRMATION ---
+  if (profile.current_status.startsWith('PROXY_DESC_')) {
+    if (isButton) return true;
+
+    const jobId = profile.current_status.split('_')[2];
+    const description = `${payload} (Proxy via Agent +${from})`;
+
+    // Note: Status is NOT 'SEARCHING' yet. It is pending the client's approval.
+    await supabase.from('jobs').update({ 
+      problem_description: description,
+      status: 'PENDING_CLIENT_CONFIRM',
+      updated_at: new Date().toISOString()
+    }).eq('job_id', jobId);
+
+    await supabase.from('profiles').update({ current_status: 'IDLE' }).eq('phone_number', from);
     
-    for (const phone of artisanNumbers) {
-      const vars = [job.job_id, category, location, description, job.job_id];
-      await sendTemplateMessage(phone, 'artisan_alert_v2', vars);
-    }
+    await sendMessage(from, `⏳ *Proxy Booking Pending!*\n\nWe have sent a confirmation message to the client. Once they tap "Yes", the Matchmaker will begin finding an artisan.`);
     
-    return true;
+    // Ensure the client's profile exists
+    const { data: job } = await supabase.from('jobs').select('*').eq('job_id', jobId).single();
+    await supabase.from('profiles').upsert({ phone_number: job.client_phone, current_status: 'IDLE' });
+
+    // V2 TEMPLATE UPGRADE: Send the confirmation template to the actual client
+    const { sendTemplateMessage } = require('../utils/whatsapp'); // Ensure this is imported at the top
+    await sendTemplateMessage(
+      job.client_phone,
+      'agent_booking_confirm',
+      [job.category, job.zone] // Fills in {{1}} and {{2}}
+    );
+
+    return true; // We DO NOT triggerMatchmaker() here anymore.
   }
 
   return false;

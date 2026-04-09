@@ -1,92 +1,110 @@
 const supabase = require('../config/supabase');
-const { sendMessage } = require('../utils/whatsapp');
-const { extractNumber } = require('../utils/fuzzyRouter');
+const { sendMessage, sendButtonMessage } = require('../utils/whatsapp');
 
-// Function to generate a random 4-character ID (e.g., 9X2P)
-function generateArtisanId() {
+/**
+ * Generates a unique, category-branded Artisan ID.
+ * Format: NX-[CAT]-XXXX (e.g., NX-ELE-7W2P)
+ * @param {string} category - The trade category selected by the user.
+ */
+function generateArtisanId(category) {
+  const prefixMap = { 'Electrical': 'ELE', 'Plumbing': 'PLU', 'Carpentry': 'CAR' };
+  const prefix = prefixMap[category] || 'GEN';
+  
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-  let id = '';
+  let randomId = '';
   for (let i = 0; i < 4; i++) {
-    id += chars.charAt(Math.floor(Math.random() * chars.length));
+    randomId += chars.charAt(Math.floor(Math.random() * chars.length));
   }
-  return `ART-${id}`;
+  return `NX-${prefix}-${randomId}`;
 }
 
-async function handleOnboardingFlow(user, from, text) {
-  const cleanText = text.trim();
-  const upperText = cleanText.toUpperCase();
+/**
+ * Handles the registration and onboarding of new Artisans and Agents.
+ */
+async function handleOnboardingFlow(profile, payload, isButton) {
+  const from = profile.phone_number;
 
-  // --- THE TRIGGER ---
-  if (upperText === 'JOIN NEXA') {
-    await supabase.from('users').update({ status: 'ONBOARDING_NAME' }).eq('phone_number', from);
-    await sendMessage(from, '🛠️ *Welcome to the Nexa Artisan Network!*\n\nLet\'s get you registered. Please reply with your Full Name or Business Name.');
-    return true;
+  // --- 1. REGISTRATION TRIGGERS ---
+  if (payload === 'JOIN NEXA') {
+    await supabase.from('profiles').update({ current_status: 'ONBOARDING_NAME' }).eq('phone_number', from);
+    return await sendMessage(from, '🛠️ *Welcome to the Nexa Artisan Network!*\n\nLet\'s get you registered. Please type your *Full Name* or *Business Name* below:');
   }
-  // --- AGENT REGISTRATION TRIGGER ---
-  if (upperText === 'JOIN AGENT') {
-    await supabase.from('users').update({ 
-      status: 'IDLE', 
+  
+  if (payload === 'JOIN AGENT') {
+    // Agents do not require meta-data tables, just a profile type update
+    await supabase.from('profiles').update({ 
+      current_status: 'IDLE', 
       user_type: 'AGENT' 
     }).eq('phone_number', from);
     
-    await sendMessage(from, '🤝 *Welcome to the Nexa Broker Network!*\n\nYou are now an authorized Agent. \n\nTo book a service for a client and earn your commission, simply reply with the word: *NEXA*');
-    return true;
+    return await sendMessage(from, '🤝 *Welcome to the Nexa Broker Network!*\n\nYou are now an authorized Agent.\n\nTo book a service for a client and earn your 15% commission share, simply type: *NEXA*');
   }
 
-  // --- STEP 1: CAPTURE NAME ---
-  if (user.status === 'ONBOARDING_NAME') {
-    // Save their name temporarily in the status string so we don't lose it
-    const safeName = cleanText.replace(/_/g, ' '); // remove underscores just in case
-    await supabase.from('users').update({ status: `ONBOARDING_CAT_${safeName}` }).eq('phone_number', from);
-    await sendMessage(from, `Thanks, ${safeName}!\n\nWhat is your primary trade?\n1️⃣ Electrical\n2️⃣ Plumbing\n3️⃣ Carpentry`);
-    return true;
+  // --- 2. NAME CAPTURE ---
+  if (profile.current_status === 'ONBOARDING_NAME') {
+    if (isButton) return true; // Name must be typed text
+
+    // Update the profile with the provided name
+    await supabase.from('profiles').update({ 
+      full_name: payload,
+      current_status: 'ONBOARDING_CAT' 
+    }).eq('phone_number', from);
+
+    // Present Trade Categories via Interactive Buttons
+    return await sendButtonMessage(from, `Thanks, ${payload}!\n\nWhat is your primary trade?`, [
+      { id: 'ONB_CAT_ELECTRICAL', title: 'Electrical' },
+      { id: 'ONB_CAT_PLUMBING', title: 'Plumbing' },
+      { id: 'ONB_CAT_CARPENTRY', title: 'Carpentry' }
+    ]);
   }
 
-  // --- STEP 2: CAPTURE CATEGORY & FINISH ---
-  if (user.status.startsWith('ONBOARDING_CAT_')) {
-    const name = user.status.replace('ONBOARDING_CAT_', '');
-    const choice = extractNumber(cleanText, ['1', '2', '3']);
-    const map = { '1': 'Electrical', '2': 'Plumbing', '3': 'Carpentry' };
-    const category = map[choice];
-
-    if (!category) {
-      await sendMessage(from, '❌ Invalid choice. Please reply with *1*, *2*, or *3*.\n\n*(Type "cancel" at any time to exit)*');
-      return true;
+  // --- 3. TRADE SELECTION & FINALIZATION ---
+  if (profile.current_status === 'ONBOARDING_CAT') {
+    if (!isButton || !payload.startsWith('ONB_CAT_')) {
+      return await sendMessage(from, '❌ Please use the buttons provided to select your trade.');
     }
 
-    const artisanId = generateArtisanId();
+    const categoryMap = { 
+      'ONB_CAT_ELECTRICAL': 'Electrical', 
+      'ONB_CAT_PLUMBING': 'Plumbing', 
+      'ONB_CAT_CARPENTRY': 'Carpentry' 
+    };
+    const category = categoryMap[payload];
+    const artisanId = generateArtisanId(category);
 
-    // 1. Insert them into the Artisans table
-    const { error: insertError } = await supabase.from('artisans').insert([{
+    // Create the specialized Artisan Meta-data entry
+    const { error: insertError } = await supabase.from('artisan_meta').insert([{
+      artisan_id: artisanId,
       phone_number: from,
-      name: name,
       category: category,
-      rating: 5.0, // Default starting rating
+      tier: 3,           // New registrations start at Tier 3 (Waterfall Base)
+      trust_score: 5.0,  // Maximum initial trust score
       is_available: true,
-      artisan_id: artisanId
+      total_jobs: 0
     }]);
 
     if (insertError) {
       console.error('Registration Error:', insertError);
-      await sendMessage(from, '⚠️ There was an error registering your account. Please try again later.');
-      return true;
+      return await sendMessage(from, '⚠️ Database Error. We couldn\'t finalize your registration. Please try again later.');
     }
 
-    // 2. Update their User profile to Artisan status
-    await supabase.from('users').update({ 
-      status: 'IDLE', 
+    // Finalize the profile update
+    await supabase.from('profiles').update({ 
+      current_status: 'IDLE', 
       user_type: 'ARTISAN' 
     }).eq('phone_number', from);
 
-    // 3. Generate the Custom Marketing Link
-    // Replace with your actual Nexa Business Number
-    const nexaNumber = process.env.META_PHONE_ID_OR_YOUR_NEXA_NUMBER || '2348113343613'; 
-    const encodedMessage = encodeURI(`Hi Nexa, I need a ${category} service. Ref: ${artisanId}`);
+    // Generate Deep-Link for direct client referral (Anti-Queue Bypass)
+    const nexaNumber = process.env.META_PHONE_ID_OR_YOUR_NEXA_NUMBER || '234707922171'; 
+    const encodedMessage = encodeURIComponent(`Hi Nexa, I need a ${category} service. Ref: ${artisanId}`);
     const waLink = `https://wa.me/${nexaNumber}?text=${encodedMessage}`;
 
-    await sendMessage(from, `✅ *Registration Complete!*\n\nYou are now active on Nexa as an *${category}*.\n\n📈 *GROW YOUR BUSINESS*\nWhen clients click the link below, Nexa will assign the job *directly to you* before anyone else sees it:\n\n🔗 ${waLink}\n\nShare this link on your WhatsApp status and campus groups!`);
-    
-    return true;
+    return await sendMessage(from, 
+      `✅ *Registration Complete!*\n\nYou are now active on Nexa as a verified *${category}*.\n\n` +
+      `📈 *GROW YOUR BUSINESS*\nWhen clients use your personal link, Nexa assigns the job *directly to you* first:\n\n` +
+      `🔗 ${waLink}\n\n` +
+      `Share this link on your WhatsApp status and groups!`
+    );
   }
 
   return false;

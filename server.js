@@ -1,15 +1,18 @@
 require('dotenv').config();
 const express = require('express');
+const supabase = require('./config/supabase');
 const { processIncomingMessage } = require('./flows/webhookHandler');
-const supabase = require('./config/supabase'); // Needed for the cron job
-const { sendMessage } = require('./utils/whatsapp');
+const { triggerMatchmaker } = require('./utils/matchmaker'); // V2: Needed for cron cascading
+const { sendMessage } = require('./utils/whatsapp'); // Needed for failure alerts
 
 const app = express();
 app.use(express.json());
 
-const VERIFY_TOKEN = 'nexa_secure_launch_2026';
+// Recommended: Move this to your Render environment variables
+const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'nexa_secure_launch_2026';
 
-// --- WEBHOOK VERIFICATION (GET) ---
+// --- 1. WEBHOOK VERIFICATION (GET) ---
+// Meta uses this endpoint to verify your server is authentic
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
@@ -23,9 +26,10 @@ app.get('/webhook', (req, res) => {
   }
 });
 
-// --- THE CORE RECEIVER (POST) ---
+// --- 2. THE CORE RECEIVER (POST) ---
+// All incoming messages from WhatsApp hit this endpoint
 app.post('/webhook', async (req, res) => {
-  res.sendStatus(200); // Instantly acknowledge receipt to Meta
+  res.sendStatus(200); // V2: Instantly acknowledge receipt to Meta to prevent timeout loops
 
   try {
     const body = req.body;
@@ -34,13 +38,18 @@ app.post('/webhook', async (req, res) => {
       const value = body.entry[0].changes[0].value;
 
       if (value.messages && value.messages[0]) {
-        if (value.messages[0].type !== 'text') return; // Ignore audio/images for now
+        const messageObj = value.messages[0];
         
-        const from = value.messages[0].from;
-        const text = value.messages[0].text.body;
+        // V2 UPGRADE: Accept both 'text' and 'interactive' (buttons/lists)
+        if (messageObj.type !== 'text' && messageObj.type !== 'interactive') {
+            return; // Ignore audio, images, location pins for now
+        }
+        
+        const from = messageObj.from;
 
-        // Hand the data off to the Traffic Cop
-        await processIncomingMessage(from, text);
+        // V2 UPGRADE: Hand the ENTIRE message object to the Traffic Cop
+        // so it can parse button IDs vs typed text
+        await processIncomingMessage(from, messageObj);
       }
     }
   } catch (err) {
@@ -48,56 +57,61 @@ app.post('/webhook', async (req, res) => {
   }
 });
 
-// --- THE 5-MINUTE CRON JOB ENDPOINT ---
-// --- THE 5-MINUTE CRON JOB ENDPOINT ---
+// --- 3. THE V2 WATERFALL CRON (GET) ---
+// Runs every 60 seconds (pinged via a cron service)
 app.get('/cron', async (req, res) => {
   try {
-    // 1. Find jobs that are PENDING_PREFERRED_ARTISAN and older than 5 minutes
-    const fiveMinutesAgo = new Date(Date.now() - 5 * 60000).toISOString();
+    const sixtySecondsAgo = new Date(Date.now() - 60000).toISOString();
     
-    const { data: expiredJobs } = await supabase
-      .from('job_tickets')
-      .select('*')
-      .eq('status', 'PENDING_PREFERRED_ARTISAN')
-      .lte('created_at', fiveMinutesAgo);
+    // --- CASCADE TIER 1 TO TIER 2 ---
+    const { data: stalledT1 } = await supabase
+      .from('jobs')
+      .select('job_id')
+      .eq('status', 'SEARCHING_T1')
+      .lte('updated_at', sixtySecondsAgo);
 
-    if (expiredJobs && expiredJobs.length > 0) {
-      for (const job of expiredJobs) {
-        console.log(`⏰ Time expired for Job #${job.job_id}. Blasting to general pool.`);
-        
-        // 2. Find 3 available artisans in that category to take over
-        const { data: backupArtisans } = await supabase
-          .from('artisans')
-          .select('phone_number')
-          .eq('category', job.category)
-          .eq('is_available', true)
-          .limit(3);
-
-        if (!backupArtisans || backupArtisans.length === 0) {
-          await supabase.from('job_tickets').update({ status: 'FAILED_NO_ARTISANS' }).eq('job_id', job.job_id);
-          await sendMessage(job.client_phone, '⚠️ The requested artisan didn\'t respond, and no backups are currently available. Please reply "menu" to try again later.');
-          continue; // Move to the next expired job if this one fails
-        }
-
-        const backupNumbers = backupArtisans.map(a => a.phone_number);
-        
-        // 3. Update the ticket to show it's now a general broadcast
-        await supabase.from('job_tickets').update({ 
-          status: 'BROADCASTED', 
-          notified_artisans: backupNumbers 
-        }).eq('job_id', job.job_id);
-        
-        // 4. Alert the client that we are widening the search
-        await sendMessage(job.client_phone, '⏳ The requested artisan is currently unavailable. We are now broadcasting your request to other verified artisans nearby...');
-
-        // 5. Blast the backups
-        for (const phone of backupNumbers) {
-          await sendMessage(phone, `🚨 *FAST MATCH ALERT!* 🚨\n\n*Job ID:* #${job.job_id}\n*Category:* ${job.category}\n*Location:* ${job.location}\n*Issue:* ${job.description}\n\n*(First to accept gets the client)*\nReply *ACCEPT ${job.job_id}* to claim this job.`);
-        }
+    if (stalledT1 && stalledT1.length > 0) {
+      for (const job of stalledT1) {
+        console.log(`⏰ T1 Expired for Job #${job.job_id}. Cascading to Tier 2.`);
+        await supabase.from('jobs').update({ status: 'SEARCHING_T2', updated_at: new Date().toISOString() }).eq('job_id', job.job_id);
+        triggerMatchmaker(job.job_id); // Ping T2 artisans
       }
     }
-    
-    res.status(200).send('Cron check complete.');
+
+    // --- CASCADE TIER 2 TO TIER 3 ---
+    const { data: stalledT2 } = await supabase
+      .from('jobs')
+      .select('job_id')
+      .eq('status', 'SEARCHING_T2')
+      .lte('updated_at', sixtySecondsAgo);
+
+    if (stalledT2 && stalledT2.length > 0) {
+      for (const job of stalledT2) {
+        console.log(`⏰ T2 Expired for Job #${job.job_id}. Cascading to Tier 3.`);
+        await supabase.from('jobs').update({ status: 'SEARCHING_T3', updated_at: new Date().toISOString() }).eq('job_id', job.job_id);
+        triggerMatchmaker(job.job_id); // Ping T3 artisans
+      }
+    }
+
+    // --- TIER 3 TIMEOUT (FAILURE) ---
+    const { data: stalledT3 } = await supabase
+      .from('jobs')
+      .select('job_id, client_phone') 
+      .eq('status', 'SEARCHING_T3')
+      .lte('updated_at', sixtySecondsAgo);
+
+    if (stalledT3 && stalledT3.length > 0) {
+      for (const job of stalledT3) {
+        console.log(`❌ T3 Expired for Job #${job.job_id}. FAILED.`);
+        
+        await supabase.from('jobs').update({ status: 'FAILED_NO_ARTISANS', updated_at: new Date().toISOString() }).eq('job_id', job.job_id);
+        await supabase.from('profiles').update({ current_status: 'IDLE' }).eq('phone_number', job.client_phone);
+        
+        await sendMessage(job.client_phone, '⚠️ We are sorry, but all our verified artisans are currently busy. Please tap "Menu" to try again later.');
+      }
+    }
+
+    res.status(200).send('✅ Waterfall check complete.');
   } catch (err) {
     console.error('❌ CRON JOB ERROR:', err);
     res.status(500).send('Error running cron check.');
@@ -106,5 +120,5 @@ app.get('/cron', async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`🚀 Nexa Production Architecture is Online (Port ${PORT})`);
+  console.log(`🚀 Nexa V2 Architecture is Online (Port ${PORT})`);
 });

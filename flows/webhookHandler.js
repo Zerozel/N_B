@@ -1,78 +1,113 @@
 const supabase = require('../config/supabase');
-const { handleClientFlow } = require('./clientFlow');
-const { handleArtisanFlow } = require('./artisanFlow');
-const { handleOnboardingFlow } = require('./onboardingFlow');
-const { sendMessage } = require('../utils/whatsapp');
-const { handleAgentFlow } = require('./agentFlow');
+const { sendMessage, sendButtonMessage } = require('../utils/whatsapp');
+
+// Import V2 Flow Handlers
 const { handleAdminFlow } = require('./adminFlow');
+const { handleArtisanFlow } = require('./artisanFlow');
+const { handleAgentFlow } = require('./agentFlow');
+const { handleClientFlow } = require('./clientFlow');
+const { handleOnboardingFlow } = require('./onboardingFlow');
 
-async function processIncomingMessage(from, text) {
+/**
+ * THE TRAFFIC COP: Routes every incoming message to the correct logic module.
+ * @param {string} from - Recipient phone number.
+ * @param {Object} messageObj - The raw message object from Meta.
+ */
+async function processIncomingMessage(from, messageObj) {
   try {
-    let cleanText = text.trim();
-    const lowerText = cleanText.toLowerCase();
-    
-    
-    // --- ADMIN BYPASS ---
-    const isAdminHandled = await handleAdminFlow(from, cleanText);
-    if (isAdminHandled) return;
+    // 1. DATA PARSING
+    let payload = '';
+    let isButton = false;
 
-    // --- 0. THE GLOBAL KILL SWITCH ---
-    // This intercepts the message BEFORE any flow can see it.
-    // It instantly forces the database state back to the beginning.
-    if (lowerText === 'menu' || lowerText === 'cancel' || lowerText === 'restart' || lowerText === 'stop') {
-      await supabase.from('users').update({ status: 'AWAITING_INTAKE_TYPE' }).eq('phone_number', from);
-      await sendMessage(from, '🛑 *Process Cancelled.*\n\n🔄 *Main Menu* 🛠️\n\nReply with a number:\n1️⃣ Service Call\n2️⃣ Make an Enquiry');
-      return; // The 'return' stops the code dead in its tracks here.
+    if (messageObj.type === 'text') {
+      payload = messageObj.text.body.trim(); // Keep case for description/names
+    } else if (messageObj.type === 'interactive') {
+      isButton = true;
+      payload = messageObj.interactive.type === 'button_reply' 
+        ? messageObj.interactive.button_reply.id 
+        : messageObj.interactive.list_reply.id;
+    } else {
+      return; // Ignore non-text/non-interactive media
     }
 
-    // --- 1. THE DEEP-LINK INTERCEPTOR ---
-    const refMatch = cleanText.match(/Ref:\s*(ART-[A-Z0-9]+)/i);
+    const upperPayload = payload.toUpperCase();
+
+    // 2. GLOBAL SYSTEM COMMANDS (Kill Switch)
+    if (upperPayload === 'CMD_CANCEL' || upperPayload === 'MENU' || upperPayload === 'CANCEL') {
+      await supabase.from('profiles').update({ current_status: 'IDLE' }).eq('phone_number', from);
+      
+      return await sendButtonMessage(
+        from, 
+        '🛑 *Process Cancelled.*\n\n🔄 *Main Menu* 🛠️\nWhat would you like to do?', 
+        [
+          { id: 'CMD_REQ_SERVICE', title: 'Request Service' },
+          { id: 'CMD_ENQUIRY', title: 'Make Enquiry' }
+        ]
+      );
+    }
+
+    // 3. V2 DEEP-LINK INTERCEPTOR (Ref: NX-CAT-ID)
+    const refMatch = payload.match(/Ref:\s*(NX-[A-Z]{3}-[A-Z0-9]{4})/i);
     let referredBy = null;
     
     if (refMatch) {
       referredBy = refMatch[1].toUpperCase(); 
-      cleanText = cleanText.replace(refMatch[0], '').trim(); 
-      console.log(`🔗 Deep-Link detected! Client referred by: ${referredBy}`);
+      console.log(`🔗 Referral link detected: ${referredBy}`);
     }
 
-    // --- 2. USER STATE MANAGEMENT ---
-    let { data: user, error: userError } = await supabase.from('users').select('*').eq('phone_number', from).single();
+    // 4. PROFILE MANAGEMENT
+    let { data: profile, error: profileError } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('phone_number', from)
+      .single();
     
-    if (userError && userError.code !== 'PGRST116') throw userError;
+    if (profileError && profileError.code !== 'PGRST116') throw profileError;
     
-    if (!user) {
-      const { data: newUser } = await supabase.from('users').insert([{ 
+    // Create new profile if it doesn't exist
+    if (!profile) {
+      const { data: newProfile } = await supabase.from('profiles').insert([{ 
           phone_number: from, 
-          status: 'NEW', 
-          user_type: 'CLIENT',
-          referred_by: referredBy 
+          current_status: 'NEW', 
+          user_type: 'CLIENT'
         }]).select().single();
-      user = newUser;
-    } else {
-      const updatePayload = { last_message: cleanText };
-      if (referredBy) updatePayload.referred_by = referredBy;
-      await supabase.from('users').update(updatePayload).eq('phone_number', from);
+      profile = newProfile;
     }
 
-    // --- 3. THE ROUTER ---
-    const isOnboardingHandled = await handleOnboardingFlow(user, from, cleanText);
-    if (isOnboardingHandled) return;
+    // 5. SEQUENTIAL ROUTING CASCADE
+    // Check Onboarding first (Triggers like 'JOIN NEXA')
+    const isOnboarding = await handleOnboardingFlow(profile, payload, isButton);
+    if (isOnboarding) return;
 
-    const isArtisanHandled = await handleArtisanFlow(user, from, cleanText);
-    if (isArtisanHandled) return;
+    // Check Admin commands (Secure number check inside handler)
+    const isAdmin = await handleAdminFlow(profile, upperPayload);
+    if (isAdmin) return;
+
+    // Route based on User Type
+    if (profile.user_type === 'ARTISAN') {
+      const handled = await handleArtisanFlow(profile, payload, isButton);
+      if (handled) return;
+    }
     
-    const isAgentHandled = await handleAgentFlow(user, from, cleanText);
-    if (isAgentHandled) return;
+    if (profile.user_type === 'AGENT') {
+      const handled = await handleAgentFlow(profile, payload, isButton);
+      if (handled) return;
+    }
+    
+    // Default: Route as a Client
+    const handledByClient = await handleClientFlow(profile, payload, isButton);
+    if (handledByClient) return;
 
-    const isClientHandled = await handleClientFlow(user, from, cleanText);
-    if (isClientHandled) return;
-
-    // The Ultimate Fallback
-    await sendMessage(from, "I didn't quite understand that. Please reply with *menu* to restart or see your options.");
+    // 6. ULTIMATE FALLBACK
+    await sendButtonMessage(
+      from, 
+      "I didn't quite catch that. Please use the menu below to restart or request help.", 
+      [{ id: 'CMD_CANCEL', title: 'Main Menu' }]
+    );
 
   } catch (err) {
-    console.error(`❌ ROUTING ERROR for ${from}:`, err);
-    await sendMessage(from, '⚠️ The system is currently experiencing high traffic. Please type "menu" to restart.');
+    console.error(`❌ ROUTER ERROR for ${from}:`, err);
+    await sendMessage(from, '⚠️ The system is currently refreshing. Please type "menu" in a moment.');
   }
 }
 
