@@ -98,11 +98,11 @@ async function processIncomingMessage(from, messageObj) {
     const handledByClient = await handleClientFlow(profile, payload, isButton);
     if (handledByClient) return;
 
-    // 6. ULTIMATE FALLBACK
+    // 6. ULTIMATE FALLBACK (Upgraded UX)
     await sendButtonMessage(
       from, 
-      "I didn't quite catch that. Please use the menu below to restart or request help.", 
-      [{ id: 'CMD_CANCEL', title: 'Main Menu' }]
+      "It looks like you typed something I don't recognize right now.\n\nTo cancel your current process and return to the Main Menu, tap the button below:", 
+      [{ id: 'CMD_CANCEL', title: '🔄 Main Menu' }]
     );
 
   } catch (err) {

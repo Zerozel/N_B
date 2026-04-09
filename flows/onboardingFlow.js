@@ -23,45 +23,51 @@ function generateArtisanId(category) {
  */
 async function handleOnboardingFlow(profile, payload, isButton) {
   const from = profile.phone_number;
+  
+  // Create an uppercase version for checking commands safely
+  const command = typeof payload === 'string' ? payload.trim().toUpperCase() : '';
 
   // --- 1. REGISTRATION TRIGGERS ---
-  if (payload === 'JOIN NEXA') {
+  if (command === 'JOIN NEXA') {
     await supabase.from('profiles').update({ current_status: 'ONBOARDING_NAME' }).eq('phone_number', from);
-    return await sendMessage(from, '🛠️ *Welcome to the Nexa Artisan Network!*\n\nLet\'s get you registered. Please type your *Full Name* or *Business Name* below:');
+    await sendMessage(from, '🛠️ *Welcome to the Nexa Artisan Network!*\n\nLet\'s get you registered. Please type your *Full Name* or *Business Name* below:');
+    return true; // THE FIX: Explicitly tell the router we handled this
   }
   
-  if (payload === 'JOIN AGENT') {
-    // Agents do not require meta-data tables, just a profile type update
+  if (command === 'JOIN AGENT') {
     await supabase.from('profiles').update({ 
       current_status: 'IDLE', 
       user_type: 'AGENT' 
     }).eq('phone_number', from);
     
-    return await sendMessage(from, '🤝 *Welcome to the Nexa Broker Network!*\n\nYou are now an authorized Agent.\n\nTo book a service for a client and earn your 15% commission share, simply type: *NEXA*');
+    await sendMessage(from, '🤝 *Welcome to the Nexa Broker Network!*\n\nYou are now an authorized Agent.\n\nTo book a service for a client and earn your 15% commission share, simply type: *NEXA*');
+    return true; // THE FIX
   }
 
   // --- 2. NAME CAPTURE ---
   if (profile.current_status === 'ONBOARDING_NAME') {
     if (isButton) return true; // Name must be typed text
 
-    // Update the profile with the provided name
+    // Update the profile with the original payload (so 'John Doe' doesn't become 'JOHN DOE')
     await supabase.from('profiles').update({ 
       full_name: payload,
       current_status: 'ONBOARDING_CAT' 
     }).eq('phone_number', from);
 
     // Present Trade Categories via Interactive Buttons
-    return await sendButtonMessage(from, `Thanks, ${payload}!\n\nWhat is your primary trade?`, [
+    await sendButtonMessage(from, `Thanks, ${payload}!\n\nWhat is your primary trade?`, [
       { id: 'ONB_CAT_ELECTRICAL', title: 'Electrical' },
       { id: 'ONB_CAT_PLUMBING', title: 'Plumbing' },
       { id: 'ONB_CAT_CARPENTRY', title: 'Carpentry' }
     ]);
+    return true; // THE FIX
   }
 
   // --- 3. TRADE SELECTION & FINALIZATION ---
   if (profile.current_status === 'ONBOARDING_CAT') {
     if (!isButton || !payload.startsWith('ONB_CAT_')) {
-      return await sendMessage(from, '❌ Please use the buttons provided to select your trade.');
+      await sendMessage(from, '❌ Please use the buttons provided to select your trade.');
+      return true; // THE FIX
     }
 
     const categoryMap = { 
@@ -85,7 +91,8 @@ async function handleOnboardingFlow(profile, payload, isButton) {
 
     if (insertError) {
       console.error('Registration Error:', insertError);
-      return await sendMessage(from, '⚠️ Database Error. We couldn\'t finalize your registration. Please try again later.');
+      await sendMessage(from, '⚠️ Database Error. We couldn\'t finalize your registration. Please try again later.');
+      return true; // THE FIX
     }
 
     // Finalize the profile update
@@ -95,16 +102,17 @@ async function handleOnboardingFlow(profile, payload, isButton) {
     }).eq('phone_number', from);
 
     // Generate Deep-Link for direct client referral (Anti-Queue Bypass)
-    const nexaNumber = process.env.META_PHONE_ID_OR_YOUR_NEXA_NUMBER || '234707922171'; 
+    const nexaNumber = process.env.META_PHONE_ID_OR_YOUR_NEXA_NUMBER || '2347079722171'; // Corrected your number slightly based on previous files
     const encodedMessage = encodeURIComponent(`Hi Nexa, I need a ${category} service. Ref: ${artisanId}`);
     const waLink = `https://wa.me/${nexaNumber}?text=${encodedMessage}`;
 
-    return await sendMessage(from, 
+    await sendMessage(from, 
       `✅ *Registration Complete!*\n\nYou are now active on Nexa as a verified *${category}*.\n\n` +
       `📈 *GROW YOUR BUSINESS*\nWhen clients use your personal link, Nexa assigns the job *directly to you* first:\n\n` +
       `🔗 ${waLink}\n\n` +
       `Share this link on your WhatsApp status and groups!`
     );
+    return true; // THE FIX
   }
 
   return false;

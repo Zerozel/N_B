@@ -8,12 +8,15 @@ const { triggerMatchmaker } = require('../utils/matchmaker');
  */
 async function handleAgentFlow(profile, payload, isButton) {
   const from = profile.phone_number;
+  
+  const command = typeof payload === 'string' ? payload.trim().toUpperCase() : '';
 
   // --- 1. PROXY INITIATION ---
   // Triggered by the keyword "NEXA" or an Admin/Menu button
-  if (payload === 'NEXA' || payload === 'CMD_PROXY_BOOK') {
+  if (command === 'NEXA' || payload === 'CMD_PROXY_BOOK') {
     await supabase.from('profiles').update({ current_status: 'PROXY_PHONE' }).eq('phone_number', from);
-    return await sendMessage(from, '📱 *Agent Proxy Initiated*\n\nPlease reply with the WhatsApp number of the client you are booking for (e.g., 2348012345678):');
+    await sendMessage(from, '📱 *Agent Proxy Initiated*\n\nPlease reply with the WhatsApp number of the client you are booking for (e.g., 2348012345678):');
+    return true; // THE FIX
   }
 
   // --- 2. CAPTURE CLIENT PHONE & SHOW CATEGORIES ---
@@ -23,13 +26,14 @@ async function handleAgentFlow(profile, payload, isButton) {
     // Basic Nigerian/International phone format validation
     const phoneRegex = /^\d{11,15}$/;
     if (!phoneRegex.test(payload)) {
-      return await sendMessage(from, '❌ Invalid format. Please enter only digits including country code (e.g., 234...).');
+      await sendMessage(from, '❌ Invalid format. Please enter only digits including country code (e.g., 234...).');
+      return true; // THE FIX
     }
     
     // Store target phone in the status string to pass to the next step
     await supabase.from('profiles').update({ current_status: `PROXY_CAT_${payload}` }).eq('phone_number', from);
     
-    return await sendButtonMessage(
+    await sendButtonMessage(
       from,
       `✅ *Target Client:* +${payload}\n\nWhat service does this client require?`,
       [
@@ -38,6 +42,7 @@ async function handleAgentFlow(profile, payload, isButton) {
         { id: `AG_CAT_CARPENTRY`, title: 'Carpentry' }
       ]
     );
+    return true; // THE FIX
   }
 
   // --- 3. CREATE DRAFT JOB & SHOW ZONES ---
@@ -71,7 +76,8 @@ async function handleAgentFlow(profile, payload, isButton) {
       }
     ];
 
-    return await sendListMessage(from, `✅ *${category}* selected.\n\nSelect the client's location zone:`, "Select Zone", zones);
+    await sendListMessage(from, `✅ *${category}* selected.\n\nSelect the client's location zone:`, "Select Zone", zones);
+    return true; // THE FIX
   }
 
   // --- 4. CAPTURE ZONE & ASK FOR DESCRIPTION ---
@@ -84,7 +90,8 @@ async function handleAgentFlow(profile, payload, isButton) {
     await supabase.from('jobs').update({ zone: zone }).eq('job_id', jobId);
     await supabase.from('profiles').update({ current_status: `PROXY_DESC_${jobId}` }).eq('phone_number', from);
 
-    return await sendMessage(from, `📍 *Zone:* ${zone}.\n\nBriefly describe the exact complaint (e.g., "Main switch tripping"):`);
+    await sendMessage(from, `📍 *Zone:* ${zone}.\n\nBriefly describe the exact complaint (e.g., "Main switch tripping"):`);
+    return true; // THE FIX
   }
 
  // --- 5. FINALIZE & REQUEST CLIENT CONFIRMATION ---

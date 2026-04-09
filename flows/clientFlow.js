@@ -23,7 +23,7 @@ async function handleClientFlow(profile, payload, isButton) {
   if (profile.current_status === 'NEW' || profile.current_status === 'IDLE') {
     if (payload === 'CMD_REQ_SERVICE') {
       await supabase.from('profiles').update({ current_status: 'AWAITING_CATEGORY' }).eq('phone_number', from);
-      return await sendButtonMessage(
+      await sendButtonMessage(
         from,
         '🛠️ What type of artisan do you need right now?',
         [
@@ -32,6 +32,7 @@ async function handleClientFlow(profile, payload, isButton) {
           { id: 'CAT_CARPENTRY', title: 'Carpentry' }
         ]
       );
+      return true; // THE FIX
     }
     
     if (payload === 'CMD_ENQUIRY') {
@@ -41,7 +42,7 @@ async function handleClientFlow(profile, payload, isButton) {
     }
 
     // Default Greeting
-    return await sendButtonMessage(
+    await sendButtonMessage(
       from,
       'Welcome to *Nexa*! 🛠️\n\nHow can we help you today?',
       [
@@ -49,6 +50,7 @@ async function handleClientFlow(profile, payload, isButton) {
         { id: 'CMD_ENQUIRY', title: 'Make Enquiry' }
       ]
     );
+    return true; // THE FIX
   }
 
   // --- 3. CATEGORY SELECTION ---
@@ -76,7 +78,8 @@ async function handleClientFlow(profile, payload, isButton) {
       { title: "Town", rows: [{ id: "ZONE_MINNA_TOWN", title: "Minna Town" }] }
     ];
 
-    return await sendListMessage(from, `✅ *${category}* selected.\n\nWhere is the location?`, "Select Zone", zones);
+    await sendListMessage(from, `✅ *${category}* selected.\n\nWhere is the location?`, "Select Zone", zones);
+    return true; // THE FIX
   }
 
   // --- 4. ZONE SELECTION ---
@@ -152,7 +155,8 @@ async function handleClientFlow(profile, payload, isButton) {
       await supabase.from('jobs').update({ status: 'CANCELLED_BY_CLIENT' }).eq('job_id', job.job_id);
     }
     
-    return await sendMessage(from, '🛑 Booking cancelled. No artisan will be dispatched. Tap "Menu" if you need anything else.');
+    await sendMessage(from, '🛑 Booking cancelled. No artisan will be dispatched. Tap "Menu" if you need anything else.');
+    return true; // THE FIX
   }
 
   // --- 6. ANTI-LEAKAGE: PRICE VERIFICATION (TEMPLATE MATCH) ---
@@ -190,7 +194,8 @@ async function handleClientFlow(profile, payload, isButton) {
     await sendMessage(job.assigned_artisan, `✅ *Payment Verified!*\nCommission of ₦${commission.toFixed(2)} logged. You are now available for new jobs.`);
 
     const ratingRows = [1, 2, 3, 4, 5].map(s => ({ id: `RATE_${jobId}_${s}`, title: `${"⭐".repeat(s)}`, description: `Rate ${s} Stars` }));
-    return await sendListMessage(from, "✅ *Job Completed!*\n\nPlease rate the service provided:", "Rate Artisan", [{ title: "Rating", rows: ratingRows }]);
+    await sendListMessage(from, "✅ *Job Completed!*\n\nPlease rate the service provided:", "Rate Artisan", [{ title: "Rating", rows: ratingRows }]);
+    return true; // THE FIX
   }
 
   // --- 7. PRICE DISPUTE (TEMPLATE MATCH) ---
@@ -223,11 +228,12 @@ async function handleClientFlow(profile, payload, isButton) {
     // Free the client
     await supabase.from('profiles').update({ current_status: 'IDLE' }).eq('phone_number', from);
     
-    return await sendButtonMessage(
+    await sendButtonMessage(
       from, 
       `🌟 Thanks! You rated this service ${score} stars.`,
       [{ id: 'CMD_REQ_SERVICE', title: 'New Request' }]
     );
+    return true; // THE FIX
   }
 
   return false;

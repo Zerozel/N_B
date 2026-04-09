@@ -68,7 +68,8 @@ async function handleArtisanFlow(profile, payload, isButton) {
     await supabase.from('jobs').update({ status: 'ON_SITE', updated_at: new Date().toISOString() }).eq('job_id', jobId);
     await supabase.from('profiles').update({ current_status: `AWAITING_PRICE_${jobId}` }).eq('phone_number', from);
     
-    return await sendMessage(from, '📍 *Status: On-Site.*\n\nOnce you have diagnosed the issue and completed the fix, reply to this chat with the *Total Final Amount* in Naira (Numbers only, e.g., 5500).');
+    await sendMessage(from, '📍 *Status: On-Site.*\n\nOnce you have diagnosed the issue and completed the fix, reply to this chat with the *Total Final Amount* in Naira (Numbers only, e.g., 5500).');
+    return true; // THE FIX
   }
 
   // --- 4. PRICE SUBMISSION (Anti-Leakage Start) ---
@@ -81,7 +82,8 @@ async function handleArtisanFlow(profile, payload, isButton) {
     const quotedPrice = parseFloat(payload.replace(/[^0-9.]/g, ''));
     
     if (isNaN(quotedPrice) || quotedPrice <= 0) {
-      return await sendMessage(from, '❌ Invalid amount. Please reply with only the total price in numbers (e.g., 4000).');
+      await sendMessage(from, '❌ Invalid amount. Please reply with only the total price in numbers (e.g., 4000).');
+      return true; // THE FIX
     }
 
     // Save quoted price and trigger client verification
