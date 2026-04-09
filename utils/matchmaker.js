@@ -20,8 +20,48 @@ function calculateMatchScore(artisan) {
 async function triggerMatchmaker(jobId) {
   // 1. Fetch the Job Details
   const { data: job } = await supabase.from('jobs').select('*').eq('job_id', jobId).single();
-  if (!job || !job.status.startsWith('SEARCHING_T')) return;
+  
+  // Failsafe: Ensure job exists and is actively searching
+  if (!job || !job.status.startsWith('SEARCHING_')) return;
 
+  // --- NEW: THE REFERRAL BYPASS ---
+  if (job.status === 'SEARCHING_T1' && job.referred_artisan) {
+    console.log(`🔗 Priority Routing: Job #${jobId} goes to Artisan ${job.referred_artisan} first.`);
+    
+    // Find that exact artisan
+    const { data: preferredArtisan } = await supabase
+      .from('artisan_meta')
+      .select('*')
+      .eq('artisan_id', job.referred_artisan)
+      .eq('is_available', true)
+      .single();
+
+    if (preferredArtisan) {
+      // Put the job in a special holding pattern
+      await supabase.from('jobs').update({ status: 'SEARCHING_REFERRED' }).eq('job_id', jobId);
+
+      // Send the job alert ONLY to them
+      await sendTemplateMessage(preferredArtisan.phone_number, 'nexa_job_alert', [job.zone, job.problem_description]);
+
+      // Give them 10 minutes to claim their personal lead
+      setTimeout(async () => {
+        const { data: checkJob } = await supabase.from('jobs').select('status').eq('job_id', jobId).single();
+        if (checkJob && checkJob.status === 'SEARCHING_REFERRED') {
+          console.log(`⏰ Referred artisan missed it. Dropping Job #${jobId} into public T1 waterfall.`);
+          // Remove the referral tag so it doesn't loop, and restart as normal T1
+          await supabase.from('jobs').update({ status: 'SEARCHING_T1', referred_artisan: null }).eq('job_id', jobId);
+          triggerMatchmaker(jobId);
+        }
+      }, 10 * 60 * 1000);
+
+      return; // Stop the code here. Do NOT run the normal waterfall yet.
+    } else {
+      console.log(`⚠️ Referred artisan ${job.referred_artisan} is offline/busy. Falling back to public waterfall.`);
+      // If offline, just let the code continue down into the normal waterfall below
+    }
+  }
+
+  // --- STANDARD TIERED WATERFALL ---
   const currentTier = parseInt(job.status.split('_T')[1]) || 1;
 
   // 2. Fetch Available Artisans (Category + Zone)
