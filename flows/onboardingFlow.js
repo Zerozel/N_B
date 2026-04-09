@@ -31,7 +31,7 @@ async function handleOnboardingFlow(profile, payload, isButton) {
   if (command === 'JOIN NEXA') {
     await supabase.from('profiles').update({ current_status: 'ONBOARDING_NAME' }).eq('phone_number', from);
     await sendMessage(from, '🛠️ *Welcome to the Nexa Artisan Network!*\n\nLet\'s get you registered. Please type your *Full Name* or *Business Name* below:');
-    return true; // THE FIX: Explicitly tell the router we handled this
+    return true; 
   }
   
   if (command === 'JOIN AGENT') {
@@ -41,7 +41,7 @@ async function handleOnboardingFlow(profile, payload, isButton) {
     }).eq('phone_number', from);
     
     await sendMessage(from, '🤝 *Welcome to the Nexa Broker Network!*\n\nYou are now an authorized Agent.\n\nTo book a service for a client and earn your 15% commission share, simply type: *NEXA*');
-    return true; // THE FIX
+    return true; 
   }
 
   // --- 2. NAME CAPTURE ---
@@ -60,14 +60,14 @@ async function handleOnboardingFlow(profile, payload, isButton) {
       { id: 'ONB_CAT_PLUMBING', title: 'Plumbing' },
       { id: 'ONB_CAT_CARPENTRY', title: 'Carpentry' }
     ]);
-    return true; // THE FIX
+    return true; 
   }
 
   // --- 3. TRADE SELECTION & FINALIZATION ---
   if (profile.current_status === 'ONBOARDING_CAT') {
     if (!isButton || !payload.startsWith('ONB_CAT_')) {
       await sendMessage(from, '❌ Please use the buttons provided to select your trade.');
-      return true; // THE FIX
+      return true; 
     }
 
     const categoryMap = { 
@@ -92,7 +92,7 @@ async function handleOnboardingFlow(profile, payload, isButton) {
     if (insertError) {
       console.error('Registration Error:', insertError);
       await sendMessage(from, '⚠️ Database Error. We couldn\'t finalize your registration. Please try again later.');
-      return true; // THE FIX
+      return true; 
     }
 
     // Finalize the profile update
@@ -102,9 +102,10 @@ async function handleOnboardingFlow(profile, payload, isButton) {
     }).eq('phone_number', from);
 
     // Generate Deep-Link for direct client referral (Anti-Queue Bypass)
-    const nexaNumber = process.env.META_PHONE_ID_OR_YOUR_NEXA_NUMBER || '2347079722171'; // Corrected your number slightly based on previous files
+    // --- UPDATED BOT NUMBER HERE ---
+    const nexaBotNumber = process.env.BOT_PHONE_NUMBER || '2348113343613'; 
     const encodedMessage = encodeURIComponent(`Hi Nexa, I need a ${category} service. Ref: ${artisanId}`);
-    const waLink = `https://wa.me/${nexaNumber}?text=${encodedMessage}`;
+    const waLink = `https://wa.me/${nexaBotNumber}?text=${encodedMessage}`;
 
     await sendMessage(from, 
       `✅ *Registration Complete!*\n\nYou are now active on Nexa as a verified *${category}*.\n\n` +
@@ -112,7 +113,7 @@ async function handleOnboardingFlow(profile, payload, isButton) {
       `🔗 ${waLink}\n\n` +
       `Share this link on your WhatsApp status and groups!`
     );
-    return true; // THE FIX
+    return true; 
   }
 
   return false;
