@@ -188,6 +188,60 @@ async function handleClientFlow(profile, payload, isButton, referredBy) {
     return true; // THE FIX
   }
 
+  // --- 5.6 CLIENT APPROVES OR REJECTS ARTISAN ---
+  if (profile.current_status.startsWith('APPROVING_ARTISAN_')) {
+    if (!isButton) return true;
+
+    const jobId = profile.current_status.replace('APPROVING_ARTISAN_', '');
+
+    if (payload.startsWith('CLIENT_ACCEPT_')) {
+      // 1. Client Accepted! Lock it in.
+      const { data: job } = await supabase.from('jobs').select('assigned_artisan, zone, problem_description, client_phone').eq('job_id', jobId).single();
+
+      if (!job) return true;
+
+      await supabase.from('jobs').update({ status: 'PENDING_ON_SITE', updated_at: new Date().toISOString() }).eq('job_id', jobId);
+      await supabase.from('profiles').update({ current_status: 'IDLE' }).eq('phone_number', from);
+
+      // Tell Client
+      await sendMessage(from, `✅ *Artisan Confirmed!*\n\nThey are being dispatched now. Please keep your line open.`);
+
+      // Tell Artisan they are approved and give them the 'Arrived' button
+      await supabase.from('profiles').update({ current_status: `ACTIVE_JOB_${jobId}` }).eq('phone_number', job.assigned_artisan);
+      await sendButtonMessage(
+        job.assigned_artisan,
+        `✅ *Client Approved!*\n\n*Client:* +${job.client_phone}\n*Zone:* ${job.zone}\n*Issue:* ${job.problem_description}\n\n📞 Call the client immediately to coordinate. Tap below when you arrive:`,
+        [{ id: `ARRIVED_${jobId}`, title: '📍 I Have Arrived' }]
+      );
+      return true;
+    }
+
+    if (payload.startsWith('CLIENT_REJECT_')) {
+      // 2. Client rejected. Put job back in the waterfall.
+      const { data: job } = await supabase.from('jobs').select('assigned_artisan').eq('job_id', jobId).single();
+
+      if (job && job.assigned_artisan) {
+        // Free the rejected artisan and tell them the bad news
+        await supabase.from('artisan_meta').update({ is_available: true }).eq('phone_number', job.assigned_artisan);
+        await supabase.from('profiles').update({ current_status: 'IDLE' }).eq('phone_number', job.assigned_artisan);
+        await sendMessage(job.assigned_artisan, '❌ The client opted to find someone else. You are back in the active pool.');
+      }
+
+      // Restart waterfall for the client
+      await supabase.from('jobs').update({ 
+        assigned_artisan: null, 
+        status: 'SEARCHING_T1', 
+        updated_at: new Date().toISOString() 
+      }).eq('job_id', jobId);
+
+      await supabase.from('profiles').update({ current_status: 'IDLE' }).eq('phone_number', from);
+      await sendMessage(from, '⚙️ Understood. Restarting the search for a new artisan...');
+
+      triggerMatchmaker(jobId);
+      return true;
+    }
+  }
+
   // --- 6. ANTI-LEAKAGE: PRICE VERIFICATION (TEMPLATE MATCH) ---
   if (isButton && payload === '✅ Yes, Correct') {
     // Look up the specific job awaiting verification for this client

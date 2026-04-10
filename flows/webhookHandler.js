@@ -27,9 +27,11 @@ async function processIncomingMessage(from, messageObj) {
         ? messageObj.interactive.button_reply.id 
         : messageObj.interactive.list_reply.id;
     } else if (messageObj.type === 'button') {
-      // 🚨 Catch Meta Template Quick Replies
+      // 🚨 THE DEFINITIVE FIX: Read both the hidden payload AND the visible text
       isButton = true;
-      payload = messageObj.button.payload || messageObj.button.text;
+      const btnPayload = messageObj.button.payload || '';
+      const btnText = messageObj.button.text || '';
+      payload = `${btnPayload} ${btnText}`.toUpperCase();
     } else {
       return; // Ignore non-text/non-interactive media
     }

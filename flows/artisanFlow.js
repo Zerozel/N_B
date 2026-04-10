@@ -10,9 +10,9 @@ async function handleArtisanFlow(profile, payload, isButton) {
   // Normalize the payload to uppercase so we catch 'accept', 'ACCEPT', 'Accept_Match', etc.
   const command = typeof payload === 'string' ? payload.toUpperCase() : '';
 
-  // --- 1. JOB ACCEPTANCE (Fuzzy Template Match) ---
-  // 🚨 THE FIX: Catch any payload containing 'ACCEPT' or the Checkmark emoji
-  if (isButton && (command.includes('ACCEPT') || command.includes('✅'))) {
+  // --- 1. JOB ACCEPTANCE (Double Opt-In Handshake) ---
+  // 🚨 THE FIX: Catch any payload containing 'ACCEPT' or the Checkmark emoji or 'YES'
+  if (isButton && (command.includes('ACCEPT') || command.includes('✅') || command.includes('YES'))) {
     
     // 1a. Find the artisan's category to match the right job
     const { data: artisan } = await supabase.from('artisan_meta').select('*').eq('phone_number', from).single();
@@ -33,33 +33,36 @@ async function handleArtisanFlow(profile, payload, isButton) {
       .single();
     
     if (!job) {
-      await sendMessage(from, '🔒 Sorry, this job has already been claimed by another artisan or cancelled.');
+      await sendMessage(from, '🔒 Sorry, this job has already been claimed or cancelled.');
       return true;
     }
 
     const jobId = job.job_id;
 
-    // Lock the job to this artisan and update status
+    // Lock the job in a new "CLIENT_REVIEW" status
     await supabase.from('jobs').update({
       assigned_artisan: from,
-      status: 'PENDING_ON_SITE',
+      status: 'CLIENT_REVIEW',
       updated_at: new Date().toISOString()
     }).eq('job_id', jobId);
 
-    // Update profiles: Artisan is busy, Client is now awaiting the artisan
-    await supabase.from('profiles').update({ current_status: `ACTIVE_JOB_${jobId}` }).eq('phone_number', from);
+    // Tell the Artisan to hold on
+    await supabase.from('profiles').update({ current_status: `WAITING_CLIENT_APPROVAL_${jobId}` }).eq('phone_number', from);
     await supabase.from('artisan_meta').update({ is_available: false }).eq('phone_number', from);
-    await supabase.from('profiles').update({ current_status: `AWAITING_ARTISAN_${jobId}` }).eq('phone_number', job.client_phone);
 
-    // Notify Artisan with standard Action Button (Free inside the 24h window now that they replied)
+    await sendMessage(from, '⏳ *Match Request Sent!*\n\nWe have sent your profile to the client for final approval. Please wait a moment...');
+
+    // Send the Client the interactive approval menu
+    await supabase.from('profiles').update({ current_status: `APPROVING_ARTISAN_${jobId}` }).eq('phone_number', job.client_phone);
+    
     await sendButtonMessage(
-      from,
-      `✅ *Job Claimed!*\n\n*Client:* +${job.client_phone}\n*Zone:* ${job.zone}\n*Issue:* ${job.problem_description}\n\n📞 Call the client immediately to coordinate. Tap below when you arrive:`,
-      [{ id: `ARRIVED_${jobId}`, title: '📍 I Have Arrived' }]
+      job.client_phone,
+      `🔔 *Artisan Found!*\n\n🧑‍🔧 *Name:* ${profile.full_name}\n⭐ *Rating:* ${artisan.trust_score}/5.0\n\nWould you like to accept this personnel for your request?`,
+      [
+        { id: `CLIENT_ACCEPT_${jobId}`, title: '✅ Accept Artisan' },
+        { id: `CLIENT_REJECT_${jobId}`, title: '❌ Find Someone Else' }
+      ]
     );
-
-    // Notify Client
-    await sendMessage(job.client_phone, `🔔 *Good news! We found a match.*\n\n🧑‍🔧 *Personnel:* ${profile.full_name}\n⭐ *Rating:* ${artisan.trust_score}/5.0\n📞 *Contact:* +${from}\n\nPlease keep your line open; they are reaching out now.`);
     return true;
   }
 
