@@ -15,6 +15,9 @@ const { handleOnboardingFlow } = require('./onboardingFlow');
  */
 async function processIncomingMessage(from, messageObj) {
   try {
+    // 🚨 THE X-RAY: Print exactly what Meta sent us before doing anything else
+    console.log(`\n=== INCOMING MESSAGE FROM ${from} ===`);
+    console.log(JSON.stringify(messageObj, null, 2));
     // 1. DATA PARSING
     let payload = '';
     let isButton = false;
@@ -33,7 +36,8 @@ async function processIncomingMessage(from, messageObj) {
       const btnText = messageObj.button.text || '';
       payload = `${btnPayload} ${btnText}`.toUpperCase();
     } else {
-      return; // Ignore non-text/non-interactive media
+      console.log(`⚠️ IGNORING MESSAGE: Unrecognized type '${messageObj.type}'`);
+      return;
     }
     
     const upperPayload = payload.toUpperCase();
