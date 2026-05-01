@@ -75,7 +75,7 @@ async function handleClientFlow(profile, payload, isButton, referredBy) {
     else if (command.includes('PLUMBING')) category = 'Plumbing';
     else if (command.includes('CARPENTRY')) category = 'Carpentry';
     else {
-      await sendMessage(from, '❌ Please select a valid category using the buttons or by typing it (e.g., Plumbing).');
+      await sendMessage(from, '❌ Please select a valid category (e.g., Plumbing).');
       return true;
     }
     
@@ -93,9 +93,8 @@ async function handleClientFlow(profile, payload, isButton, referredBy) {
     return true; 
   }
 
- // --- 4. ZONE SELECTION ---
+  // --- 4. ZONE SELECTION ---
   if (profile.current_status === 'AWAITING_ZONE') {
-    // 🚨 THE FIX: Strip out underscores from Meta's hidden List IDs
     const cleanCommand = command.replace(/_/g, ' ');
 
     let zone = '';
@@ -154,7 +153,16 @@ async function handleClientFlow(profile, payload, isButton, referredBy) {
   // --- 5.6 CLIENT APPROVES OR REJECTS ARTISAN ---
   if (profile.current_status === 'APPROVING_ARTISAN') {
     if (command.includes('ACCEPT') || command.includes('YES')) {
-      const { data: job } = await supabase.from('jobs').select('job_id, assigned_artisan, zone, problem_description, client_phone').eq('client_phone', from).eq('status', 'CLIENT_REVIEW').single();
+      
+      // 🚨 THE FIX: Added order() and limit(1) to prevent multi-row crashes from abandoned tests!
+      const { data: job } = await supabase.from('jobs')
+        .select('job_id, assigned_artisan, zone, problem_description, client_phone')
+        .eq('client_phone', from)
+        .eq('status', 'CLIENT_REVIEW')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .single();
+        
       if (!job) return true;
 
       const jobId = job.job_id;
@@ -173,7 +181,16 @@ async function handleClientFlow(profile, payload, isButton, referredBy) {
     }
 
     if (command.includes('REJECT') || command.includes('NO') || command.includes('SOMEONE ELSE')) {
-      const { data: job } = await supabase.from('jobs').select('job_id, assigned_artisan').eq('client_phone', from).eq('status', 'CLIENT_REVIEW').single();
+      
+      // 🚨 THE FIX: Same safety net added here
+      const { data: job } = await supabase.from('jobs')
+        .select('job_id, assigned_artisan')
+        .eq('client_phone', from)
+        .eq('status', 'CLIENT_REVIEW')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .single();
+        
       if (!job) return true;
 
       const jobId = job.job_id;
@@ -191,7 +208,7 @@ async function handleClientFlow(profile, payload, isButton, referredBy) {
       return true;
     }
     
-    return true; // Keeps them locked in if they type gibberish
+    return true; 
   }
 
   // --- 6 & 7. PRICE VERIFICATION & DISPUTE ---
@@ -230,7 +247,7 @@ async function handleClientFlow(profile, payload, isButton, referredBy) {
       return true;
     }
 
-    return true; // Keeps them locked in if they type gibberish
+    return true; 
   }
 
   // --- 8. RATING SUBMISSION ---
