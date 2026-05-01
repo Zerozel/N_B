@@ -71,15 +71,18 @@ async function handleAgentFlow(profile, payload, isButton) {
     return true; 
   }
 
-  // --- 4. CAPTURE ZONE & ASK FOR DESCRIPTION ---
+ // --- 4. CAPTURE ZONE & ASK FOR DESCRIPTION ---
   if (profile.current_status === 'PROXY_ZONE') {
+    // 🚨 THE FIX: Strip out underscores from Meta's hidden List IDs
+    const cleanCommand = command.replace(/_/g, ' ');
+
     let zone = '';
-    if (command.includes('GIDAN KWANO')) zone = 'Gidan Kwano';
-    else if (command.includes('BOSSO')) zone = 'Bosso';
-    else if (command.includes('MINNA TOWN') || command.includes('MINNA')) zone = 'Minna Town';
+    if (cleanCommand.includes('GIDAN KWANO')) zone = 'Gidan Kwano';
+    else if (cleanCommand.includes('BOSSO')) zone = 'Bosso';
+    else if (cleanCommand.includes('MINNA TOWN') || cleanCommand.includes('MINNA')) zone = 'Minna Town';
     else {
       await sendMessage(from, '❌ Please select a valid zone (e.g., Bosso).');
-      return true;
+      return true; 
     }
 
     const { data: job } = await supabase.from('jobs').select('job_id').eq('status', 'PROXY_DRAFT').eq('referred_artisan', from).order('created_at', { ascending: false }).limit(1).single();
@@ -91,7 +94,6 @@ async function handleAgentFlow(profile, payload, isButton) {
     await sendMessage(from, `📍 *Zone:* ${zone}.\n\nBriefly describe the exact complaint (e.g., "Main switch tripping"):`);
     return true; 
   }
-
  // --- 5. FINALIZE & AUTO-START WATERFALL ---
   if (profile.current_status === 'PROXY_DESC') {
     if (isButton) return true;

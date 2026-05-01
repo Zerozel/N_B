@@ -93,12 +93,15 @@ async function handleClientFlow(profile, payload, isButton, referredBy) {
     return true; 
   }
 
-  // --- 4. ZONE SELECTION ---
+ // --- 4. ZONE SELECTION ---
   if (profile.current_status === 'AWAITING_ZONE') {
+    // 🚨 THE FIX: Strip out underscores from Meta's hidden List IDs
+    const cleanCommand = command.replace(/_/g, ' ');
+
     let zone = '';
-    if (command.includes('GIDAN KWANO')) zone = 'Gidan Kwano';
-    else if (command.includes('BOSSO')) zone = 'Bosso';
-    else if (command.includes('MINNA TOWN') || command.includes('MINNA')) zone = 'Minna Town';
+    if (cleanCommand.includes('GIDAN KWANO')) zone = 'Gidan Kwano';
+    else if (cleanCommand.includes('BOSSO')) zone = 'Bosso';
+    else if (cleanCommand.includes('MINNA TOWN') || cleanCommand.includes('MINNA')) zone = 'Minna Town';
     else {
       await sendMessage(from, '❌ Please select a valid zone from the list or type it (e.g., Bosso).');
       return true;
