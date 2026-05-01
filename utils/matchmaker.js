@@ -1,5 +1,4 @@
 const supabase = require('../config/supabase');
-// V2 TEMPLATE UPGRADE: Import sendTemplateMessage
 const { sendTemplateMessage, sendMessage } = require('../utils/whatsapp');
 
 /**
@@ -21,14 +20,15 @@ async function triggerMatchmaker(jobId) {
   // 1. Fetch the Job Details
   const { data: job } = await supabase.from('jobs').select('*').eq('job_id', jobId).single();
   
-  // Failsafe: Ensure job exists and is actively searching
   if (!job || !job.status.startsWith('SEARCHING_')) return;
 
+  // 🚨 THE IDENTITY FIX: Check if this is an Artisan Referral (NX-ID) or an Agent Proxy (Phone Number)
+  const isDirectReferral = job.referred_artisan && job.referred_artisan.startsWith('NX-');
+
   // --- NEW: THE REFERRAL BYPASS ---
-  if (job.status === 'SEARCHING_T1' && job.referred_artisan) {
+  if (job.status === 'SEARCHING_T1' && isDirectReferral) {
     console.log(`🔗 Priority Routing: Job #${jobId} goes to Artisan ${job.referred_artisan} first.`);
     
-    // Find that exact artisan
     const { data: preferredArtisan } = await supabase
       .from('artisan_meta')
       .select('*')
@@ -37,51 +37,46 @@ async function triggerMatchmaker(jobId) {
       .single();
 
     if (preferredArtisan) {
-      // Put the job in a special holding pattern
       await supabase.from('jobs').update({ status: 'SEARCHING_REFERRED' }).eq('job_id', jobId);
-
-      // Send the job alert ONLY to them
       await sendTemplateMessage(preferredArtisan.phone_number, 'nexa_job_alert', [job.zone, job.problem_description]);
 
-      // Give them 10 minutes to claim their personal lead
       setTimeout(async () => {
         const { data: checkJob } = await supabase.from('jobs').select('status').eq('job_id', jobId).single();
         if (checkJob && checkJob.status === 'SEARCHING_REFERRED') {
           console.log(`⏰ Referred artisan missed it. Dropping Job #${jobId} into public T1 waterfall.`);
-          // Remove the referral tag so it doesn't loop, and restart as normal T1
           await supabase.from('jobs').update({ status: 'SEARCHING_T1', referred_artisan: null }).eq('job_id', jobId);
           triggerMatchmaker(jobId);
         }
       }, 10 * 60 * 1000);
 
-      return; // Stop the code here. Do NOT run the normal waterfall yet.
+      return; 
     } else {
       console.log(`⚠️ Referred artisan ${job.referred_artisan} is offline/busy. Falling back to public waterfall.`);
-      // If offline, just let the code continue down into the normal waterfall below
     }
+  } else if (job.referred_artisan && !isDirectReferral) {
+    console.log(`🛡️ Proxy Job detected. Agent +${job.referred_artisan} is handling the client. Routing to public waterfall...`);
   }
 
   // --- STANDARD TIERED WATERFALL ---
   const currentTier = parseInt(job.status.split('_T')[1]) || 1;
 
-  // 2. Fetch Available Artisans (Category + Zone)
+  // 2. Fetch Available Artisans 
+  // 🚨 THE CASE-INSENSITIVE FIX: Using .ilike() instead of .eq() so capitalization doesn't break the search
   const { data: targetGroupRaw } = await supabase
     .from('artisan_meta')
     .select('artisan_id, phone_number, tier, trust_score')
-    .eq('category', job.category)
-    .eq('zone', job.zone)
+    .ilike('category', job.category) 
+    .ilike('zone', job.zone)         
     .eq('is_available', true);
 
-  // If absolutely ZERO artisans exist in this zone/category across all tiers
   if (!targetGroupRaw || targetGroupRaw.length === 0) {
-    // Fail instantly. No need to make the client wait 10 mins if nobody exists.
     return await handleNoArtisans(jobId);
   }
 
   // 3. Isolate the Target Group for the CURRENT Tier
   let targetGroup = targetGroupRaw.filter(a => a.tier === currentTier);
 
-  // 4. THE FAST-FORWARD (If current tier is empty, move to next instantly)
+  // 4. THE FAST-FORWARD 
   if (targetGroup.length === 0) {
     if (currentTier < 3) {
       console.log(`⏩ Tier ${currentTier} is empty for Job #${jobId}. Fast-forwarding.`);
@@ -112,32 +107,27 @@ async function triggerMatchmaker(jobId) {
   }
 
   // 7. THE PATIENCE CLOCK (10-Minute Escalation Timer)
-  const ESCALATION_DELAY_MS = 10 * 60 * 1000; // 10 minutes in milliseconds
+  const ESCALATION_DELAY_MS = 10 * 60 * 1000; 
   
   console.log(`⏳ Alerts sent. Starting 10-minute patience clock for Tier ${currentTier}...`);
 
   setTimeout(async () => {
-    // Wake up after 10 minutes and check the database
     const { data: currentJobState } = await supabase.from('jobs').select('status').eq('job_id', jobId).single();
     
-    // If the status is STILL searching for this tier, nobody accepted it
     if (currentJobState && currentJobState.status === `SEARCHING_T${currentTier}`) {
       console.log(`⏰ Time's up for Tier ${currentTier}. Nobody replied to Job #${jobId}.`);
       
       if (currentTier < 3) {
-        // Escalate to next tier
         await supabase.from('jobs').update({ 
           status: `SEARCHING_T${currentTier + 1}`, 
           updated_at: new Date().toISOString() 
         }).eq('job_id', jobId);
         
-        triggerMatchmaker(jobId); // Run the engine for the next tier
+        triggerMatchmaker(jobId); 
       } else {
-        // The entire waterfall is exhausted
         await handleNoArtisans(jobId);
       }
     } else {
-      // The status changed (e.g., PENDING_ON_SITE)! Someone accepted it.
       console.log(`✅ Job #${jobId} was already accepted. Escalation timer safely ignored.`);
     }
   }, ESCALATION_DELAY_MS);
@@ -149,18 +139,30 @@ async function triggerMatchmaker(jobId) {
 async function handleNoArtisans(jobId) {
   console.log(`❌ Waterfall dry for Job #${jobId}. FAILED.`);
   
-  // Fetch latest job details for the message
   const { data: job } = await supabase.from('jobs').select('*').eq('job_id', jobId).single();
   if (!job) return;
 
   await supabase.from('jobs').update({ status: 'FAILED_NO_ARTISANS', updated_at: new Date().toISOString() }).eq('job_id', jobId);
+  
+  // Clean up states
   await supabase.from('profiles').update({ current_status: 'IDLE' }).eq('phone_number', job.client_phone);
+  if (job.referred_artisan && !job.referred_artisan.startsWith('NX-')) {
+    await supabase.from('profiles').update({ current_status: 'IDLE' }).eq('phone_number', job.referred_artisan);
+  }
   
   const CS_NUMBER = process.env.CUSTOMER_SERVICE_NUMBER || '2347079722171';
   const preFilledMsg = encodeURIComponent(`Hi Nexa Support, my service request for ${job.category} in ${job.zone} couldn't find an available artisan. Can you help?`);
   const waLink = `https://wa.me/${CS_NUMBER}?text=${preFilledMsg}`;
 
-  await sendMessage(job.client_phone, `⚠️ *No Available Artisans*\n\nAll our verified ${job.category}s in your zone are currently busy or offline.\n\nPlease chat with our human support team so we can manually dispatch someone for you:\n\n🔗 ${waLink}`);
+  const failureMessage = `⚠️ *No Available Artisans*\n\nAll our verified ${job.category} personnel in your zone are currently busy or offline.\n\nPlease chat with our human support team so we can manually dispatch someone for you:\n\n🔗 ${waLink}`;
+
+  // Notify the person handling the job
+  if (job.referred_artisan && !job.referred_artisan.startsWith('NX-')) {
+      await sendMessage(job.referred_artisan, failureMessage);
+      await sendMessage(job.client_phone, `⚠️ We could not find an available artisan right now. Your agent has been notified and is contacting support.`);
+  } else {
+      await sendMessage(job.client_phone, failureMessage);
+  }
 }
 
 module.exports = { triggerMatchmaker };
