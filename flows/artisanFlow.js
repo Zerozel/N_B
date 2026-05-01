@@ -22,10 +22,11 @@ async function handleArtisanFlow(profile, payload, isButton) {
     }
 
     // 1b. Find the most recent active job looking for this category
+    // 🚨 THE FIX: Swapped strict .eq() for fuzzy .ilike() to prevent case-sensitivity crashes
     const { data: job } = await supabase.from('jobs')
       .select('*')
-      .like('status', 'SEARCHING_%') 
-      .eq('category', artisan.category)
+      .ilike('status', 'SEARCHING_%') 
+      .ilike('category', `%${artisan.category.trim()}%`) // Ignores uppercase/lowercase and spaces
       .order('created_at', { ascending: false })
       .limit(1)
       .single();
