@@ -16,7 +16,6 @@ async function handleArtisanFlow(profile, payload, isButton) {
     // 1a. Find the artisan's category to match the right job
     const { data: artisan } = await supabase.from('artisan_meta').select('*').eq('phone_number', from).single();
     
-    // Failsafe: If the artisan somehow isn't in the meta table, stop the crash
     if (!artisan) {
       await sendMessage(from, '⚠️ Error: We could not find your verified trade category. Please text "MENU" and contact support.');
       return true;
@@ -49,19 +48,27 @@ async function handleArtisanFlow(profile, payload, isButton) {
     await supabase.from('profiles').update({ current_status: 'WAITING_APPROVAL' }).eq('phone_number', from);
     await supabase.from('artisan_meta').update({ is_available: false }).eq('phone_number', from);
 
-    await sendMessage(from, '⏳ *Match Request Sent!*\n\nWe have sent your profile to the client for final approval. Please wait a moment...');
+    await sendMessage(from, '⏳ *Match Request Sent!*\n\nWe have sent your profile for final approval. Please wait a moment...');
 
-    // Clean status for the client
-    await supabase.from('profiles').update({ current_status: 'APPROVING_ARTISAN' }).eq('phone_number', job.client_phone);
+    // 🚨 PROXY CHECK: Who gets the approval button?
+    const isProxy = !!job.referred_artisan;
+    const approvalPhone = isProxy ? job.referred_artisan : job.client_phone;
+
+    await supabase.from('profiles').update({ current_status: 'APPROVING_ARTISAN' }).eq('phone_number', approvalPhone);
     
     await sendButtonMessage(
-      job.client_phone,
-      `🔔 *Artisan Found!*\n\n🧑‍🔧 *Name:* ${profile.full_name}\n⭐ *Rating:* ${artisan.trust_score}/5.0\n\nWould you like to accept this personnel for your request?`,
+      approvalPhone,
+      `🔔 *Artisan Found${isProxy ? ' for Target Client' : ''}!*\n\n🧑‍🔧 *Name:* ${profile.full_name}\n⭐ *Rating:* ${artisan.trust_score}/5.0\n\nWould you like to accept this personnel${isProxy ? ' on behalf of your client?' : ' for your request?'}`,
       [
         { id: `CLIENT_ACCEPT_${jobId}`, title: '✅ Accept Artisan' },
         { id: `CLIENT_REJECT_${jobId}`, title: '❌ Find Someone Else' }
       ]
     );
+
+    // If Agent is handling it, send a view-only text to the actual Client
+    if (isProxy) {
+      await sendMessage(job.client_phone, `⚙️ We have found an artisan for your request! Your agent is currently reviewing their profile to confirm the dispatch.`);
+    }
     return true;
   }
 
@@ -91,7 +98,7 @@ async function handleArtisanFlow(profile, payload, isButton) {
 
     // We ask the database for the artisan's active job instead of using a saved ID
     const { data: job } = await supabase.from('jobs')
-      .select('job_id, client_phone')
+      .select('job_id, client_phone, referred_artisan')
       .eq('assigned_artisan', from)
       .eq('status', 'ON_SITE')
       .single();
@@ -113,19 +120,24 @@ async function handleArtisanFlow(profile, payload, isButton) {
       updated_at: new Date().toISOString()
     }).eq('job_id', job.job_id);
 
-    // 🚨 CHANGED: The Artisan is now LOCKED into the state machine while waiting for client verification.
+    // The Artisan is locked into the state machine while waiting for client verification.
     await supabase.from('profiles').update({ current_status: 'WAITING_VERIFICATION' }).eq('phone_number', from); 
     
-    await sendMessage(from, `✅ *Price Submitted: ₦${quotedPrice.toLocaleString()}*\n\nWe are now asking the client to verify this amount. You will be notified once they confirm.`);
+    await sendMessage(from, `✅ *Price Submitted: ₦${quotedPrice.toLocaleString()}*\n\nWe are now asking for verification on this amount. You will be notified once confirmed.`);
+
+    // 🚨 PROXY CHECK: Who verifies the payment?
+    const isProxy = !!job.referred_artisan;
+    const approvalPhone = isProxy ? job.referred_artisan : job.client_phone;
 
     // Clean status
-    await supabase.from('profiles').update({ current_status: 'VERIFYING_PRICE' }).eq('phone_number', job.client_phone);
+    await supabase.from('profiles').update({ current_status: 'VERIFYING_PRICE' }).eq('phone_number', approvalPhone);
     
-    await sendTemplateMessage(
-      job.client_phone,
-      'nexa_payment_verify',
-      [quotedPrice.toLocaleString()] 
-    );
+    await sendTemplateMessage(approvalPhone, 'nexa_payment_verify', [quotedPrice.toLocaleString()]);
+    
+    // If Agent is handling it, send a view-only text to the Client
+    if (isProxy) {
+      await sendMessage(job.client_phone, `💳 The artisan has submitted a total bill of ₦${quotedPrice.toLocaleString()}. Your agent is currently reviewing this amount for final approval.`);
+    }
     
     return true;
   }
