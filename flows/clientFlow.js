@@ -10,6 +10,9 @@ const CUSTOMER_SERVICE_NUMBER = process.env.CUSTOMER_SERVICE_NUMBER || '23470797
  */
 async function handleClientFlow(profile, payload, isButton, referredBy) {
   const from = profile.phone_number;
+  
+  // 🚨 THE FIX: Normalize the payload to UPPERCASE so template buttons never fail on case-sensitivity
+  const command = typeof payload === 'string' ? payload.toUpperCase() : '';
 
   // --- 1. ENQUIRY MODE ---
   if (profile.current_status === 'ENQUIRY_MODE') {
@@ -46,7 +49,7 @@ async function handleClientFlow(profile, payload, isButton, referredBy) {
 
   // --- 2. ENTRY POINT / MAIN MENU ---
   if (profile.current_status === 'NEW' || profile.current_status === 'IDLE') {
-    if (payload === 'CMD_REQ_SERVICE') {
+    if (command === 'CMD_REQ_SERVICE') {
       await supabase.from('profiles').update({ current_status: 'AWAITING_CATEGORY' }).eq('phone_number', from);
       await sendButtonMessage(
         from,
@@ -60,7 +63,7 @@ async function handleClientFlow(profile, payload, isButton, referredBy) {
       return true; 
     }
     
-    if (payload === 'CMD_ENQUIRY') {
+    if (command === 'CMD_ENQUIRY') {
       await supabase.from('profiles').update({ current_status: 'ENQUIRY_MODE' }).eq('phone_number', from);
       await sendMessage(from, 'Please type your enquiry below. A Nexa agent will review it shortly.');
       return true;
@@ -79,11 +82,12 @@ async function handleClientFlow(profile, payload, isButton, referredBy) {
 
   // --- 3. CATEGORY SELECTION ---
   if (profile.current_status === 'AWAITING_CATEGORY') {
-    if (!isButton || !payload.startsWith('CAT_')) {
+    if (!isButton || !command.startsWith('CAT_')) {
       await sendMessage(from, '❌ Please use the buttons to select a category.');
       return true;
     }
 
+    // Use the original payload to preserve title casing for the database
     const category = payload.split('_')[1].charAt(0) + payload.split('_')[1].slice(1).toLowerCase();
     
     const { data: job, error } = await supabase.from('jobs').insert([{
@@ -107,7 +111,7 @@ async function handleClientFlow(profile, payload, isButton, referredBy) {
 
   // --- 4. ZONE SELECTION ---
   if (profile.current_status === 'AWAITING_ZONE') {
-    if (!isButton || !payload.startsWith('ZONE_')) return true;
+    if (!isButton || !command.startsWith('ZONE_')) return true;
 
     const { data: job } = await supabase.from('jobs')
       .select('job_id')
@@ -119,10 +123,10 @@ async function handleClientFlow(profile, payload, isButton, referredBy) {
 
     if (!job) return true;
 
+    // Use original payload to preserve spacing and casing
     const zone = payload.replace('ZONE_', '').replace('_', ' ');
 
     await supabase.from('jobs').update({ zone: zone }).eq('job_id', job.job_id);
-    
     await supabase.from('profiles').update({ current_status: 'AWAITING_DESC' }).eq('phone_number', from);
 
     await sendMessage(from, `📍 Zone set to *${zone}*.\n\nFinally, briefly describe the issue (e.g., "Burst pipe in kitchen"):`);
@@ -144,7 +148,7 @@ async function handleClientFlow(profile, payload, isButton, referredBy) {
     if (!job) return true;
     
     await supabase.from('jobs').update({ 
-      problem_description: payload, 
+      problem_description: payload, // Preserve original casing for description
       status: 'SEARCHING_T1',
       updated_at: new Date().toISOString()
     }).eq('job_id', job.job_id);
@@ -157,7 +161,8 @@ async function handleClientFlow(profile, payload, isButton, referredBy) {
   }
   
   // --- 5.5 PROXY BOOKING CONFIRMATION ---
-  if (isButton && payload === '✅ Yes, Find Artisan') {
+  // 🚨 THE FIX: Uppercase fuzzy matching for Meta Template buttons
+  if (isButton && command.includes('YES, FIND ARTISAN')) {
     const { data: job } = await supabase.from('jobs')
       .select('*')
       .eq('client_phone', from)
@@ -179,7 +184,7 @@ async function handleClientFlow(profile, payload, isButton, referredBy) {
     return true;
   }
 
-  if (isButton && payload === '❌ Cancel Booking') {
+  if (isButton && command.includes('CANCEL BOOKING')) {
     const { data: job } = await supabase.from('jobs')
       .select('job_id')
       .eq('client_phone', from)
@@ -200,16 +205,14 @@ async function handleClientFlow(profile, payload, isButton, referredBy) {
   if (profile.current_status === 'APPROVING_ARTISAN') {
     if (!isButton) return true;
 
-    if (payload.startsWith('CLIENT_ACCEPT_')) {
-      const jobId = payload.replace('CLIENT_ACCEPT_', '');
+    if (command.startsWith('CLIENT_ACCEPT_')) {
+      const jobId = command.replace('CLIENT_ACCEPT_', '');
       
       const { data: job } = await supabase.from('jobs').select('assigned_artisan, zone, problem_description, client_phone').eq('job_id', jobId).single();
 
       if (!job) return true;
 
       await supabase.from('jobs').update({ status: 'PENDING_ON_SITE', updated_at: new Date().toISOString() }).eq('job_id', jobId);
-      
-      // 🚨 CHANGED: The Client is now LOCKED into the tracking state.
       await supabase.from('profiles').update({ current_status: 'TRACKING_ARTISAN' }).eq('phone_number', from);
 
       await sendMessage(from, `✅ *Artisan Confirmed!*\n\nThey are being dispatched now. Please keep your line open.`);
@@ -223,8 +226,8 @@ async function handleClientFlow(profile, payload, isButton, referredBy) {
       return true;
     }
 
-    if (payload.startsWith('CLIENT_REJECT_')) {
-      const jobId = payload.replace('CLIENT_REJECT_', '');
+    if (command.startsWith('CLIENT_REJECT_')) {
+      const jobId = command.replace('CLIENT_REJECT_', '');
       const { data: job } = await supabase.from('jobs').select('assigned_artisan').eq('job_id', jobId).single();
 
       if (job && job.assigned_artisan) {
@@ -248,7 +251,8 @@ async function handleClientFlow(profile, payload, isButton, referredBy) {
   }
 
   // --- 6. ANTI-LEAKAGE: PRICE VERIFICATION ---
-  if (isButton && payload === '✅ Yes, Correct') {
+  // 🚨 THE FIX: Synchronized with State Machine and Uppercase fuzzy matching
+  if (profile.current_status === 'VERIFYING_PRICE' && isButton && command.includes('YES, CORRECT')) {
     const { data: job } = await supabase.from('jobs')
       .select('*')
       .eq('client_phone', from)
@@ -283,7 +287,8 @@ async function handleClientFlow(profile, payload, isButton, referredBy) {
   }
 
   // --- 7. PRICE DISPUTE ---
-  if (isButton && payload === '❌ Disputed') {
+  // 🚨 THE FIX: Synchronized with State Machine and Uppercase fuzzy matching
+  if (profile.current_status === 'VERIFYING_PRICE' && isButton && command.includes('DISPUTED')) {
     const { data: job } = await supabase.from('jobs')
       .select('*')
       .eq('client_phone', from)
@@ -297,7 +302,6 @@ async function handleClientFlow(profile, payload, isButton, referredBy) {
     const jobId = job.job_id;
 
     await supabase.from('jobs').update({ status: 'DISPUTED' }).eq('job_id', jobId);
-    // 🚨 CHANGED: If disputed, they are no longer locked and return to IDLE
     await supabase.from('profiles').update({ current_status: 'IDLE' }).eq('phone_number', from);
 
     await sendMessage(from, `⚠️ Dispute logged. An agent will contact you shortly.`);
@@ -306,10 +310,9 @@ async function handleClientFlow(profile, payload, isButton, referredBy) {
   }
 
   // --- 8. RATING SUBMISSION ---
-  if (profile.current_status === 'AWAITING_RATING' && isButton && payload.startsWith('RATE_')) {
-    const [, jobId, score] = payload.split('_');
+  if (profile.current_status === 'AWAITING_RATING' && isButton && command.startsWith('RATE_')) {
+    const [, jobId, score] = command.split('_');
     
-    // 🚨 The lock ends here when they rate the artisan
     await supabase.from('profiles').update({ current_status: 'IDLE' }).eq('phone_number', from);
     
     await sendButtonMessage(
