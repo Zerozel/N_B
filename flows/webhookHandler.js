@@ -18,19 +18,19 @@ async function processIncomingMessage(from, messageObj) {
     // 🚨 THE X-RAY: Print exactly what Meta sent us before doing anything else
     console.log(`\n=== INCOMING MESSAGE FROM ${from} ===`);
     console.log(JSON.stringify(messageObj, null, 2));
+    
     // 1. DATA PARSING
     let payload = '';
     let isButton = false;
 
     if (messageObj.type === 'text') {
-      payload = messageObj.text.body.trim(); // Keep case for description/names
+      payload = messageObj.text.body.trim(); 
     } else if (messageObj.type === 'interactive') {
       isButton = true;
       payload = messageObj.interactive.type === 'button_reply' 
         ? messageObj.interactive.button_reply.id 
         : messageObj.interactive.list_reply.id;
     } else if (messageObj.type === 'button') {
-      // 🚨 THE DEFINITIVE FIX: Read both the hidden payload AND the visible text
       isButton = true;
       const btnPayload = messageObj.button.payload || '';
       const btnText = messageObj.button.text || '';
@@ -42,30 +42,7 @@ async function processIncomingMessage(from, messageObj) {
     
     const upperPayload = payload.toUpperCase();
 
-    // 2. GLOBAL SYSTEM COMMANDS (Kill Switch)
-    if (upperPayload === 'CMD_CANCEL' || upperPayload === 'MENU' || upperPayload === 'CANCEL') {
-      await supabase.from('profiles').update({ current_status: 'IDLE' }).eq('phone_number', from);
-      
-      return await sendButtonMessage(
-        from, 
-        '🛑 *Process Cancelled.*\n\n🔄 *Main Menu* 🛠️\nWhat would you like to do?', 
-        [
-          { id: 'CMD_REQ_SERVICE', title: 'Request Service' },
-          { id: 'CMD_ENQUIRY', title: 'Make Enquiry' }
-        ]
-      );
-    }
-
-    // 3. V2 DEEP-LINK INTERCEPTOR (Ref: NX-CAT-ID)
-    const refMatch = payload.match(/Ref:\s*(NX-[A-Z]{3}-[A-Z0-9]{4})/i);
-    let referredBy = null;
-    
-    if (refMatch) {
-      referredBy = refMatch[1].toUpperCase(); 
-      console.log(`🔗 Referral link detected: ${referredBy}`);
-    }
-
-    // 4. PROFILE MANAGEMENT
+    // 2. PROFILE MANAGEMENT (🚨 MOVED UP: We must know who they are before we let them type MENU)
     let { data: profile, error: profileError } = await supabase
       .from('profiles')
       .select('*')
@@ -84,16 +61,53 @@ async function processIncomingMessage(from, messageObj) {
       profile = newProfile;
     }
 
+    // 3. GLOBAL SYSTEM COMMANDS (The State Machine Lock)
+    if (upperPayload === 'CMD_CANCEL' || upperPayload === 'MENU' || upperPayload === 'CANCEL') {
+      
+      // 🚨 THE LOCK LIST: If the user is in any of these states, MENU is disabled.
+      const lockedStatuses = [
+        'TRACKING_ARTISAN',   // Client is waiting for artisan to arrive
+        'VERIFYING_PRICE',    // Client must approve the submitted price
+        'AWAITING_RATING',    // Client must rate the artisan to close the loop
+        'WAITING_APPROVAL',   // Artisan is waiting for client to accept them
+        'AWAITING_PRICE',     // Artisan is on site, must submit a price
+        'WAITING_VERIFICATION'// Artisan is waiting for client to verify the price
+      ];
+
+      if (lockedStatuses.includes(profile.current_status)) {
+        await sendMessage(from, '⚠️ *Action Locked*\n\nYou currently have an active job in progress. You must complete the current step before returning to the main menu.');
+        return; // Stop the code here. Do not wipe their status.
+      }
+
+      // If they are NOT locked, allow the reset
+      await supabase.from('profiles').update({ current_status: 'IDLE' }).eq('phone_number', from);
+      
+      return await sendButtonMessage(
+        from, 
+        '🛑 *Process Cancelled.*\n\n🔄 *Main Menu* 🛠️\nWhat would you like to do?', 
+        [
+          { id: 'CMD_REQ_SERVICE', title: 'Request Service' },
+          { id: 'CMD_ENQUIRY', title: 'Make Enquiry' }
+        ]
+      );
+    }
+
+    // 4. V2 DEEP-LINK INTERCEPTOR (Ref: NX-CAT-ID)
+    const refMatch = payload.match(/Ref:\s*(NX-[A-Z]{3}-[A-Z0-9]{4})/i);
+    let referredBy = null;
+    
+    if (refMatch) {
+      referredBy = refMatch[1].toUpperCase(); 
+      console.log(`🔗 Referral link detected: ${referredBy}`);
+    }
+
     // 5. SEQUENTIAL ROUTING CASCADE
-    // Check Onboarding first (Triggers like 'JOIN NEXA')
     const isOnboarding = await handleOnboardingFlow(profile, payload, isButton);
     if (isOnboarding) return;
 
-    // Check Admin commands (Secure number check inside handler)
     const isAdmin = await handleAdminFlow(profile, upperPayload);
     if (isAdmin) return;
 
-    // Route based on User Type
     if (profile.user_type === 'ARTISAN') {
       const handled = await handleArtisanFlow(profile, payload, isButton);
       if (handled) return;
@@ -104,11 +118,10 @@ async function processIncomingMessage(from, messageObj) {
       if (handled) return;
     }
     
-    // Default: Route as a Client (Now passing the referredBy ID!)
     const handledByClient = await handleClientFlow(profile, payload, isButton, referredBy);
     if (handledByClient) return;
 
-    // 6. ULTIMATE FALLBACK (Upgraded UX)
+    // 6. ULTIMATE FALLBACK
     await sendButtonMessage(
       from, 
       "It looks like you typed something I don't recognize right now.\n\nTo cancel your current process and return to the Main Menu, tap the button below:", 

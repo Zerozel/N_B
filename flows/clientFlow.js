@@ -8,7 +8,6 @@ const CUSTOMER_SERVICE_NUMBER = process.env.CUSTOMER_SERVICE_NUMBER || '23470797
 /**
  * Handles all Client-side interactions including service requests and payment verification.
  */
-// Added referredBy to the parameters here:
 async function handleClientFlow(profile, payload, isButton, referredBy) {
   const from = profile.phone_number;
 
@@ -22,28 +21,25 @@ async function handleClientFlow(profile, payload, isButton, referredBy) {
 
   // --- 1.5. V2 DEEP-LINK FAST-TRACK ---
   if (referredBy && (profile.current_status === 'NEW' || profile.current_status === 'IDLE')) {
-    // Extract the category from their pre-filled WhatsApp message
     const catMatch = payload.match(/need a (\w+) service/i);
     const category = catMatch ? catMatch[1].charAt(0).toUpperCase() + catMatch[1].slice(1).toLowerCase() : 'Unknown';
 
-    // Create the DRAFT job and tag their specific artisan!
     const { data: job, error } = await supabase.from('jobs').insert([{
       client_phone: from,
       category: category,
       status: 'DRAFT',
-      referred_artisan: referredBy // Save the artisan's NX- ID here
+      referred_artisan: referredBy 
     }]).select().single();
 
     if (error) throw error;
 
-    await supabase.from('profiles').update({ current_status: `AWAITING_ZONE_${job.job_id}` }).eq('phone_number', from);
+    await supabase.from('profiles').update({ current_status: 'AWAITING_ZONE' }).eq('phone_number', from);
 
     const zones = [
       { title: "Campus", rows: [{ id: "ZONE_GIDAN_KWANO", title: "Gidan Kwano" }, { id: "ZONE_BOSSO", title: "Bosso" }] },
       { title: "Town", rows: [{ id: "ZONE_MINNA_TOWN", title: "Minna Town" }] }
     ];
 
-    // Greet them and skip straight to Zone selection
     await sendListMessage(from, `👋 *Welcome to Nexa!*\n\nWe see you were referred by a verified *${category}* artisan.\n\nTo finalize your request, please select your location:`, "Select Zone", zones);
     return true; 
   }
@@ -61,7 +57,7 @@ async function handleClientFlow(profile, payload, isButton, referredBy) {
           { id: 'CAT_CARPENTRY', title: 'Carpentry' }
         ]
       );
-      return true; // THE FIX
+      return true; 
     }
     
     if (payload === 'CMD_ENQUIRY') {
@@ -70,7 +66,6 @@ async function handleClientFlow(profile, payload, isButton, referredBy) {
       return true;
     }
 
-    // Default Greeting
     await sendButtonMessage(
       from,
       'Welcome to *Nexa*! 🛠️\n\nHow can we help you today?',
@@ -79,7 +74,7 @@ async function handleClientFlow(profile, payload, isButton, referredBy) {
         { id: 'CMD_ENQUIRY', title: 'Make Enquiry' }
       ]
     );
-    return true; // THE FIX
+    return true; 
   }
 
   // --- 3. CATEGORY SELECTION ---
@@ -91,7 +86,6 @@ async function handleClientFlow(profile, payload, isButton, referredBy) {
 
     const category = payload.split('_')[1].charAt(0) + payload.split('_')[1].slice(1).toLowerCase();
     
-    // Create the DRAFT job to anchor the process
     const { data: job, error } = await supabase.from('jobs').insert([{
       client_phone: from,
       category: category,
@@ -100,7 +94,7 @@ async function handleClientFlow(profile, payload, isButton, referredBy) {
 
     if (error) throw error;
 
-    await supabase.from('profiles').update({ current_status: `AWAITING_ZONE_${job.job_id}` }).eq('phone_number', from);
+    await supabase.from('profiles').update({ current_status: 'AWAITING_ZONE' }).eq('phone_number', from);
 
     const zones = [
       { title: "Campus", rows: [{ id: "ZONE_GIDAN_KWANO", title: "Gidan Kwano" }, { id: "ZONE_BOSSO", title: "Bosso" }] },
@@ -108,47 +102,62 @@ async function handleClientFlow(profile, payload, isButton, referredBy) {
     ];
 
     await sendListMessage(from, `✅ *${category}* selected.\n\nWhere is the location?`, "Select Zone", zones);
-    return true; // THE FIX
+    return true; 
   }
 
   // --- 4. ZONE SELECTION ---
-  if (profile.current_status.startsWith('AWAITING_ZONE_')) {
+  if (profile.current_status === 'AWAITING_ZONE') {
     if (!isButton || !payload.startsWith('ZONE_')) return true;
 
-    const jobId = profile.current_status.split('_')[2];
+    const { data: job } = await supabase.from('jobs')
+      .select('job_id')
+      .eq('client_phone', from)
+      .eq('status', 'DRAFT')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single();
+
+    if (!job) return true;
+
     const zone = payload.replace('ZONE_', '').replace('_', ' ');
 
-    await supabase.from('jobs').update({ zone: zone }).eq('job_id', jobId);
-    await supabase.from('profiles').update({ current_status: `AWAITING_DESC_${jobId}` }).eq('phone_number', from);
+    await supabase.from('jobs').update({ zone: zone }).eq('job_id', job.job_id);
+    
+    await supabase.from('profiles').update({ current_status: 'AWAITING_DESC' }).eq('phone_number', from);
 
     await sendMessage(from, `📍 Zone set to *${zone}*.\n\nFinally, briefly describe the issue (e.g., "Burst pipe in kitchen"):`);
     return true;
   }
 
   // --- 5. DESCRIPTION & MATCHMAKING ---
-  if (profile.current_status.startsWith('AWAITING_DESC_')) {
+  if (profile.current_status === 'AWAITING_DESC') {
     if (isButton) return true;
 
-    const jobId = profile.current_status.split('_')[2];
+    const { data: job } = await supabase.from('jobs')
+      .select('job_id')
+      .eq('client_phone', from)
+      .eq('status', 'DRAFT')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single();
+
+    if (!job) return true;
     
-    // Update Job to SEARCHING_T1 to trigger the waterfall
     await supabase.from('jobs').update({ 
       problem_description: payload, 
       status: 'SEARCHING_T1',
       updated_at: new Date().toISOString()
-    }).eq('job_id', jobId);
+    }).eq('job_id', job.job_id);
 
     await supabase.from('profiles').update({ current_status: 'IDLE' }).eq('phone_number', from);
     await sendMessage(from, '⚙️ *Request received!* We are currently matching you with the best verified artisans nearby. Please stay tuned for an update.');
 
-    // Kick off the Matchmaker Algorithm
-    triggerMatchmaker(jobId);
+    triggerMatchmaker(job.job_id);
     return true;
   }
   
-  // --- 5.5 PROXY BOOKING CONFIRMATION (TEMPLATE MATCH) ---
+  // --- 5.5 PROXY BOOKING CONFIRMATION ---
   if (isButton && payload === '✅ Yes, Find Artisan') {
-    // Look up the proxy job waiting for this client
     const { data: job } = await supabase.from('jobs')
       .select('*')
       .eq('client_phone', from)
@@ -159,7 +168,6 @@ async function handleClientFlow(profile, payload, isButton, referredBy) {
     
     if (!job) return true;
 
-    // Client approved it! Now we trigger the waterfall.
     await supabase.from('jobs').update({ 
       status: 'SEARCHING_T1',
       updated_at: new Date().toISOString()
@@ -185,29 +193,28 @@ async function handleClientFlow(profile, payload, isButton, referredBy) {
     }
     
     await sendMessage(from, '🛑 Booking cancelled. No artisan will be dispatched. Tap "Menu" if you need anything else.');
-    return true; // THE FIX
+    return true; 
   }
 
   // --- 5.6 CLIENT APPROVES OR REJECTS ARTISAN ---
-  if (profile.current_status.startsWith('APPROVING_ARTISAN_')) {
+  if (profile.current_status === 'APPROVING_ARTISAN') {
     if (!isButton) return true;
 
-    const jobId = profile.current_status.replace('APPROVING_ARTISAN_', '');
-
     if (payload.startsWith('CLIENT_ACCEPT_')) {
-      // 1. Client Accepted! Lock it in.
+      const jobId = payload.replace('CLIENT_ACCEPT_', '');
+      
       const { data: job } = await supabase.from('jobs').select('assigned_artisan, zone, problem_description, client_phone').eq('job_id', jobId).single();
 
       if (!job) return true;
 
       await supabase.from('jobs').update({ status: 'PENDING_ON_SITE', updated_at: new Date().toISOString() }).eq('job_id', jobId);
-      await supabase.from('profiles').update({ current_status: 'IDLE' }).eq('phone_number', from);
+      
+      // 🚨 CHANGED: The Client is now LOCKED into the tracking state.
+      await supabase.from('profiles').update({ current_status: 'TRACKING_ARTISAN' }).eq('phone_number', from);
 
-      // Tell Client
       await sendMessage(from, `✅ *Artisan Confirmed!*\n\nThey are being dispatched now. Please keep your line open.`);
 
-      // Tell Artisan they are approved and give them the 'Arrived' button
-      await supabase.from('profiles').update({ current_status: `ACTIVE_JOB_${jobId}` }).eq('phone_number', job.assigned_artisan);
+      await supabase.from('profiles').update({ current_status: 'ACTIVE_JOB' }).eq('phone_number', job.assigned_artisan);
       await sendButtonMessage(
         job.assigned_artisan,
         `✅ *Client Approved!*\n\n*Client:* +${job.client_phone}\n*Zone:* ${job.zone}\n*Issue:* ${job.problem_description}\n\n📞 Call the client immediately to coordinate. Tap below when you arrive:`,
@@ -217,17 +224,15 @@ async function handleClientFlow(profile, payload, isButton, referredBy) {
     }
 
     if (payload.startsWith('CLIENT_REJECT_')) {
-      // 2. Client rejected. Put job back in the waterfall.
+      const jobId = payload.replace('CLIENT_REJECT_', '');
       const { data: job } = await supabase.from('jobs').select('assigned_artisan').eq('job_id', jobId).single();
 
       if (job && job.assigned_artisan) {
-        // Free the rejected artisan and tell them the bad news
         await supabase.from('artisan_meta').update({ is_available: true }).eq('phone_number', job.assigned_artisan);
         await supabase.from('profiles').update({ current_status: 'IDLE' }).eq('phone_number', job.assigned_artisan);
         await sendMessage(job.assigned_artisan, '❌ The client opted to find someone else. You are back in the active pool.');
       }
 
-      // Restart waterfall for the client
       await supabase.from('jobs').update({ 
         assigned_artisan: null, 
         status: 'SEARCHING_T1', 
@@ -242,9 +247,8 @@ async function handleClientFlow(profile, payload, isButton, referredBy) {
     }
   }
 
-  // --- 6. ANTI-LEAKAGE: PRICE VERIFICATION (TEMPLATE MATCH) ---
+  // --- 6. ANTI-LEAKAGE: PRICE VERIFICATION ---
   if (isButton && payload === '✅ Yes, Correct') {
-    // Look up the specific job awaiting verification for this client
     const { data: job } = await supabase.from('jobs')
       .select('*')
       .eq('client_phone', from)
@@ -256,9 +260,8 @@ async function handleClientFlow(profile, payload, isButton, referredBy) {
     if (!job) return true;
 
     const jobId = job.job_id;
-    const commission = job.quoted_price * 0.15; // Strictly 15% as per SAD
+    const commission = job.quoted_price * 0.15; 
 
-    // Log transaction in Ledger
     await supabase.from('ledger').insert([{
       job_id: jobId,
       artisan_phone: job.assigned_artisan,
@@ -266,24 +269,21 @@ async function handleClientFlow(profile, payload, isButton, referredBy) {
       commission_owed: commission
     }]);
 
-    // Cleanup: Mark Job Complete & Free Artisan
     await supabase.from('jobs').update({ status: 'COMPLETED' }).eq('job_id', jobId);
     await supabase.from('artisan_meta').update({ is_available: true }).eq('phone_number', job.assigned_artisan);
     await supabase.from('profiles').update({ current_status: 'IDLE' }).eq('phone_number', job.assigned_artisan);
 
-    // Prompt for Rating
-    await supabase.from('profiles').update({ current_status: `AWAITING_RATING_${jobId}` }).eq('phone_number', from);
+    await supabase.from('profiles').update({ current_status: 'AWAITING_RATING' }).eq('phone_number', from);
     
     await sendMessage(job.assigned_artisan, `✅ *Payment Verified!*\nCommission of ₦${commission.toFixed(2)} logged. You are now available for new jobs.`);
 
     const ratingRows = [1, 2, 3, 4, 5].map(s => ({ id: `RATE_${jobId}_${s}`, title: `${"⭐".repeat(s)}`, description: `Rate ${s} Stars` }));
     await sendListMessage(from, "✅ *Job Completed!*\n\nPlease rate the service provided:", "Rate Artisan", [{ title: "Rating", rows: ratingRows }]);
-    return true; // THE FIX
+    return true; 
   }
 
-  // --- 7. PRICE DISPUTE (TEMPLATE MATCH) ---
+  // --- 7. PRICE DISPUTE ---
   if (isButton && payload === '❌ Disputed') {
-    // Look up the specific job awaiting verification for this client
     const { data: job } = await supabase.from('jobs')
       .select('*')
       .eq('client_phone', from)
@@ -297,6 +297,7 @@ async function handleClientFlow(profile, payload, isButton, referredBy) {
     const jobId = job.job_id;
 
     await supabase.from('jobs').update({ status: 'DISPUTED' }).eq('job_id', jobId);
+    // 🚨 CHANGED: If disputed, they are no longer locked and return to IDLE
     await supabase.from('profiles').update({ current_status: 'IDLE' }).eq('phone_number', from);
 
     await sendMessage(from, `⚠️ Dispute logged. An agent will contact you shortly.`);
@@ -305,10 +306,10 @@ async function handleClientFlow(profile, payload, isButton, referredBy) {
   }
 
   // --- 8. RATING SUBMISSION ---
-  if (isButton && payload.startsWith('RATE_')) {
+  if (profile.current_status === 'AWAITING_RATING' && isButton && payload.startsWith('RATE_')) {
     const [, jobId, score] = payload.split('_');
     
-    // Free the client
+    // 🚨 The lock ends here when they rate the artisan
     await supabase.from('profiles').update({ current_status: 'IDLE' }).eq('phone_number', from);
     
     await sendButtonMessage(
@@ -316,7 +317,7 @@ async function handleClientFlow(profile, payload, isButton, referredBy) {
       `🌟 Thanks! You rated this service ${score} stars.`,
       [{ id: 'CMD_REQ_SERVICE', title: 'New Request' }]
     );
-    return true; // THE FIX
+    return true; 
   }
 
   return false;
