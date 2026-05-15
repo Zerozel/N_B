@@ -45,7 +45,7 @@ app.post('/webhook', async (req, res) => {
     const messageObj = value?.messages?.[0];
     if (!messageObj) return;
 
-    if (messageObj.type !== 'text' && messageObj.type !== 'interactive') {
+    if (messageObj.type !== 'text' && messageObj.type !== 'interactive' && messageObj.type !== 'button') {
       console.log(`⚠️  Ignoring unsupported message type: ${messageObj.type}`);
       return;
     }
