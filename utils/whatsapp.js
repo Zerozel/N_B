@@ -1,53 +1,50 @@
-require('dotenv').config();
+// utils/whatsapp.js
 const axios = require('axios');
 
-// Set up the global Meta Graph API endpoint and authentication headers
-const META_URL = `https://graph.facebook.com/v18.0/${process.env.META_PHONE_ID}/messages`;
+const META_URL = `https://graph.facebook.com/v20.0/${process.env.META_PHONE_ID}/messages`;
 const HEADERS = {
   'Authorization': `Bearer ${process.env.META_ACCESS_TOKEN}`,
   'Content-Type': 'application/json'
 };
 
+function clean(number) {
+  return String(number).replace('@c.us', '').trim();
+}
+
 /**
- * Sends a standard plain text message.
- * @param {string} toPhoneNumber - The recipient's number (e.g., '2348012345678')
- * @param {string} messageText - The body of the message.
+ * Sends a plain text message.
  */
 async function sendMessage(toPhoneNumber, messageText) {
-  // Automatically clean old database tags (@c.us) to prevent routing errors
-  const cleanNumber = String(toPhoneNumber).replace('@c.us', '');
-  
   try {
     await axios.post(META_URL, {
       messaging_product: 'whatsapp',
-      to: cleanNumber,
+      to: clean(toPhoneNumber),
       type: 'text',
       text: { body: messageText }
     }, { headers: HEADERS });
   } catch (err) {
-    console.error(`❌ TEXT ERROR TO ${cleanNumber}:`, err.response?.data || err.message);
+    console.error(`❌ sendMessage to ${toPhoneNumber}:`, err.response?.data || err.message);
   }
 }
 
 /**
  * Sends an interactive message with up to 3 Quick Reply buttons.
- * @param {string} toPhoneNumber - The recipient's number.
- * @param {string} bodyText - The main text of the message.
- * @param {Array} buttons - Array of objects: [{ id: 'CMD_ID', title: 'Button Text' }]
+ * @param {Array} buttons - [{ id: 'CMD_ID', title: 'Button Text' }]
  */
 async function sendButtonMessage(toPhoneNumber, bodyText, buttons) {
-  const cleanNumber = String(toPhoneNumber).replace('@c.us', '');
-  
-  // Format the simplified buttons array into Meta's strict JSON structure
-  const formattedButtons = buttons.map(btn => ({
+  // Meta enforces: max 3 buttons, title max 20 chars, id max 256 chars
+  const formattedButtons = buttons.slice(0, 3).map(btn => ({
     type: 'reply',
-    reply: { id: btn.id, title: btn.title }
+    reply: {
+      id: String(btn.id).substring(0, 256),
+      title: String(btn.title).substring(0, 20)
+    }
   }));
 
   try {
     await axios.post(META_URL, {
       messaging_product: 'whatsapp',
-      to: cleanNumber,
+      to: clean(toPhoneNumber),
       type: 'interactive',
       interactive: {
         type: 'button',
@@ -56,74 +53,59 @@ async function sendButtonMessage(toPhoneNumber, bodyText, buttons) {
       }
     }, { headers: HEADERS });
   } catch (err) {
-    console.error(`❌ BUTTON ERROR TO ${cleanNumber}:`, err.response?.data || err.message);
+    console.error(`❌ sendButtonMessage to ${toPhoneNumber}:`, err.response?.data || err.message);
   }
 }
 
 /**
- * Sends an interactive List Message (Dropdown menu) for 4+ options.
- * @param {string} toPhoneNumber - The recipient's number.
- * @param {string} bodyText - The main text explaining what to select.
- * @param {string} buttonLabel - The text on the button that opens the list (e.g., 'Select Zone').
- * @param {Array} sections - Array of sections containing rows (See Meta docs for structure).
+ * Sends an interactive List Message (dropdown) for 4+ options.
+ * @param {Array} sections - Meta sections array with rows
  */
 async function sendListMessage(toPhoneNumber, bodyText, buttonLabel, sections) {
-  const cleanNumber = String(toPhoneNumber).replace('@c.us', '');
-  
   try {
     await axios.post(META_URL, {
       messaging_product: 'whatsapp',
-      to: cleanNumber,
+      to: clean(toPhoneNumber),
       type: 'interactive',
       interactive: {
         type: 'list',
         body: { text: bodyText },
-        action: { button: buttonLabel, sections: sections }
+        action: {
+          button: String(buttonLabel).substring(0, 20),
+          sections: sections
+        }
       }
     }, { headers: HEADERS });
   } catch (err) {
-    console.error(`❌ LIST ERROR TO ${cleanNumber}:`, err.response?.data || err.message);
+    console.error(`❌ sendListMessage to ${toPhoneNumber}:`, err.response?.data || err.message);
   }
 }
 
 /**
- * Sends a pre-approved Meta Template Message. Used to bypass the 24-hour restriction window.
- * @param {string} toPhoneNumber - The recipient's number.
- * @param {string} templateName - The exact name of the template approved in Meta Business Manager.
- * @param {Array} variables - Array of strings to fill the {{1}}, {{2}} placeholders.
- * @returns {boolean} - Returns true if successful, false if rejected.
+ * Sends a pre-approved Meta Template Message (bypasses the 24-hour window).
+ * @param {string} templateName - Exact name from Meta Business Manager
+ * @param {Array} variables - Strings to fill {{1}}, {{2}} placeholders
  */
 async function sendTemplateMessage(toPhoneNumber, templateName, variables) {
-  const cleanNumber = String(toPhoneNumber).replace('@c.us', '');
-  
   try {
     await axios.post(META_URL, {
       messaging_product: 'whatsapp',
-      to: cleanNumber,
+      to: clean(toPhoneNumber),
       type: 'template',
       template: {
         name: templateName,
-        // Forcing en_US to bypass Meta's hidden language mismatch bug
-        language: { code: 'en_US' }, 
+        language: { code: 'en_US' },
         components: [{
           type: 'body',
-          // Meta strictly requires all variable parameters to be formatted as strings
           parameters: variables.map(val => ({ type: 'text', text: String(val) }))
         }]
       }
     }, { headers: HEADERS });
-    
     return true;
   } catch (err) {
-    // Stringify the error response to see exactly what variable Meta rejected in Render logs
-    console.error(`❌ TEMPLATE ERROR TO ${cleanNumber}:`, err.response ? JSON.stringify(err.response.data) : err.message);
+    console.error(`❌ sendTemplateMessage "${templateName}" to ${toPhoneNumber}:`, JSON.stringify(err.response?.data || err.message));
     return false;
   }
 }
 
-module.exports = { 
-  sendMessage, 
-  sendButtonMessage, 
-  sendListMessage, 
-  sendTemplateMessage 
-};
+module.exports = { sendMessage, sendButtonMessage, sendListMessage, sendTemplateMessage };

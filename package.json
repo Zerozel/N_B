@@ -1,10 +1,11 @@
 {
   "name": "nexa-dispatch-core",
   "version": "2.0.0",
-  "description": "Nexa Dispatch Bot - Meta Graph API Production Engine",
+  "description": "Nexa WhatsApp Dispatch Bot — Meta Cloud API + Supabase",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "node --watch server.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0",

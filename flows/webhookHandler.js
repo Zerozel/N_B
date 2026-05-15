@@ -1,107 +1,116 @@
+// flows/webhookHandler.js
 const supabase = require('../config/supabase');
 const { sendMessage, sendButtonMessage } = require('../utils/whatsapp');
 
-// Import V2 Flow Handlers
-const { handleAdminFlow } = require('./adminFlow');
-const { handleArtisanFlow } = require('./artisanFlow');
-const { handleAgentFlow } = require('./agentFlow');
-const { handleClientFlow } = require('./clientFlow');
+const { handleAdminFlow }      = require('./adminFlow');
+const { handleArtisanFlow }    = require('./artisanFlow');
+const { handleAgentFlow }      = require('./agentFlow');
+const { handleClientFlow }     = require('./clientFlow');
 const { handleOnboardingFlow } = require('./onboardingFlow');
 
 /**
- * THE TRAFFIC COP: Routes every incoming message to the correct logic module.
- * @param {string} from - Recipient phone number.
- * @param {Object} messageObj - The raw message object from Meta.
+ * THE TRAFFIC COP — Routes every incoming message to the correct flow.
  */
 async function processIncomingMessage(from, messageObj) {
   try {
-    // 🚨 THE X-RAY: Print exactly what Meta sent us before doing anything else
-    console.log(`\n=== INCOMING MESSAGE FROM ${from} ===`);
+    console.log(`\n=== MESSAGE from ${from} ===`);
     console.log(JSON.stringify(messageObj, null, 2));
-    
-    // 1. DATA PARSING
+
+    // --- 1. PARSE PAYLOAD ---
     let payload = '';
     let isButton = false;
 
     if (messageObj.type === 'text') {
-      payload = messageObj.text.body.trim(); 
+      payload = messageObj.text.body.trim();
     } else if (messageObj.type === 'interactive') {
       isButton = true;
-      payload = messageObj.interactive.type === 'button_reply' 
-        ? messageObj.interactive.button_reply.id 
-        : messageObj.interactive.list_reply.id;
-    } else if (messageObj.type === 'button') {
-      isButton = true;
-      const btnPayload = messageObj.button.payload || '';
-      const btnText = messageObj.button.text || '';
-      payload = `${btnPayload} ${btnText}`.toUpperCase();
+      if (messageObj.interactive.type === 'button_reply') {
+        payload = messageObj.interactive.button_reply.id;
+      } else if (messageObj.interactive.type === 'list_reply') {
+        payload = messageObj.interactive.list_reply.id;
+      }
     } else {
-      console.log(`⚠️ IGNORING MESSAGE: Unrecognized type '${messageObj.type}'`);
+      console.log(`⚠️  Ignoring type: ${messageObj.type}`);
       return;
     }
-    
-    const upperPayload = payload.toUpperCase();
 
-    // 2. PROFILE MANAGEMENT (🚨 MOVED UP: We must know who they are before we let them type MENU)
+    const upperPayload = payload.toUpperCase();
+    console.log(`→ payload: "${payload}" | isButton: ${isButton}`);
+
+    // --- 2. PROFILE MANAGEMENT ---
     let { data: profile, error: profileError } = await supabase
       .from('profiles')
       .select('*')
       .eq('phone_number', from)
       .single();
-    
+
     if (profileError && profileError.code !== 'PGRST116') throw profileError;
-    
-    // Create new profile if it doesn't exist
+
     if (!profile) {
-      const { data: newProfile } = await supabase.from('profiles').insert([{ 
-          phone_number: from, 
-          current_status: 'NEW', 
-          user_type: 'CLIENT'
-        }]).select().single();
+      const { data: newProfile, error: createError } = await supabase
+        .from('profiles')
+        .insert([{ phone_number: from, current_status: 'NEW', user_type: 'CLIENT' }])
+        .select()
+        .single();
+      if (createError) throw createError;
       profile = newProfile;
+      console.log(`✨ New user created: ${from}`);
     }
 
-    // 3. GLOBAL SYSTEM COMMANDS (The State Machine Lock)
+    console.log(`→ Profile: type=${profile.user_type} | status=${profile.current_status}`);
+
+    // --- 3. GLOBAL COMMANDS (State Machine Lock) ---
     if (upperPayload === 'CMD_CANCEL' || upperPayload === 'MENU' || upperPayload === 'CANCEL') {
-      
-      // 🚨 THE LOCK LIST: If the user is in any of these states, MENU is disabled.
+
+      // These statuses lock the user in until they complete the current step
       const lockedStatuses = [
-        'TRACKING_ARTISAN',   // Client is waiting for artisan to arrive
-        'VERIFYING_PRICE',    // Client must approve the submitted price
-        'AWAITING_RATING',    // Client must rate the artisan to close the loop
-        'WAITING_APPROVAL',   // Artisan is waiting for client to accept them
-        'AWAITING_PRICE',     // Artisan is on site, must submit a price
-        'WAITING_VERIFICATION'// Artisan is waiting for client to verify the price
+        // Client locks
+        'TRACKING_ARTISAN',    // Client waiting for artisan en route
+        'VERIFYING_PRICE',     // Client approving final price
+        'AWAITING_RATING',     // Must rate to close the loop
+        // Artisan locks
+        'WAITING_APPROVAL',    // Artisan waiting for client to approve them
+        'ACTIVE_JOB',          // Artisan accepted — travelling to site
+        'AWAITING_PRICE',      // Artisan on-site, must submit price
+        'WAITING_VERIFICATION',// Artisan waiting for client to verify price
+        // Agent proxy locks — mid-booking cannot be interrupted
+        'PROXY_PHONE',
+        'PROXY_CATEGORY',
+        'PROXY_ZONE',
+        'PROXY_DESC',
+        // Operational Upgrades
+        'AWAITING_COMMISSION_PAYMENT',
+        'AWAITING_BYOC_COMPLETION'
       ];
 
       if (lockedStatuses.includes(profile.current_status)) {
-        await sendMessage(from, '⚠️ *Action Locked*\n\nYou currently have an active job in progress. You must complete the current step before returning to the main menu.');
-        return; // Stop the code here. Do not wipe their status.
+        await sendMessage(from,
+          '⚠️ *Action Locked*\n\n' +
+          'You have an active job in progress. Please complete the current step first.\n\n' +
+          'If you have an urgent issue, contact support: +' + (process.env.CUSTOMER_SERVICE_NUMBER || '2347079722171')
+        );
+        return;
       }
 
-      // If they are NOT locked, allow the reset
+      // Safe to reset
       await supabase.from('profiles').update({ current_status: 'IDLE' }).eq('phone_number', from);
-      
-      return await sendButtonMessage(
-        from, 
-        '🛑 *Process Cancelled.*\n\n🔄 *Main Menu* 🛠️\nWhat would you like to do?', 
+      return await sendButtonMessage(from,
+        '🛑 *Process Cancelled.*\n\n🔄 *Main Menu* — What would you like to do?',
         [
           { id: 'CMD_REQ_SERVICE', title: 'Request Service' },
-          { id: 'CMD_ENQUIRY', title: 'Make Enquiry' }
+          { id: 'CMD_ENQUIRY',     title: 'Make Enquiry'    }
         ]
       );
     }
 
-    // 4. V2 DEEP-LINK INTERCEPTOR (Ref: NX-CAT-ID)
+    // --- 4. DEEP-LINK INTERCEPTOR (Ref: NX-CAT-ID) ---
     const refMatch = payload.match(/Ref:\s*(NX-[A-Z]{3}-[A-Z0-9]{4})/i);
-    let referredBy = null;
-    
-    if (refMatch) {
-      referredBy = refMatch[1].toUpperCase(); 
-      console.log(`🔗 Referral link detected: ${referredBy}`);
-    }
+    const referredBy = refMatch ? refMatch[1].toUpperCase() : null;
+    if (referredBy) console.log(`🔗 Referral detected: ${referredBy}`);
 
-    // 5. SEQUENTIAL ROUTING CASCADE
+    // --- 5. ROUTING CASCADE ---
+    // Order matters: Onboarding first (catches JOIN NEXA/AGENT), then Admin, then role-based flows
+
     const isOnboarding = await handleOnboardingFlow(profile, payload, isButton);
     if (isOnboarding) return;
 
@@ -112,25 +121,26 @@ async function processIncomingMessage(from, messageObj) {
       const handled = await handleArtisanFlow(profile, payload, isButton);
       if (handled) return;
     }
-    
+
     if (profile.user_type === 'AGENT') {
       const handled = await handleAgentFlow(profile, payload, isButton);
       if (handled) return;
     }
-    
+
+    // CLIENT is the default (all user types fall through to client for service requests)
     const handledByClient = await handleClientFlow(profile, payload, isButton, referredBy);
     if (handledByClient) return;
 
-    // 6. ULTIMATE FALLBACK
-    await sendButtonMessage(
-      from, 
-      "It looks like you typed something I don't recognize right now.\n\nTo cancel your current process and return to the Main Menu, tap the button below:", 
+    // --- 6. ULTIMATE FALLBACK ---
+    console.log(`ℹ️  No handler matched for ${from}. Showing fallback menu.`);
+    await sendButtonMessage(from,
+      "I didn't quite get that. 🤔\n\nTap the button below to return to the main menu:",
       [{ id: 'CMD_CANCEL', title: '🔄 Main Menu' }]
     );
 
   } catch (err) {
     console.error(`❌ ROUTER ERROR for ${from}:`, err);
-    await sendMessage(from, '⚠️ The system is currently refreshing. Please type "menu" in a moment.');
+    await sendMessage(from, '⚠️ The system is refreshing. Please type "menu" in a moment.');
   }
 }
 

@@ -1,17 +1,22 @@
-require('dotenv').config();
+// config/supabase.js
+// dotenv is already loaded by server.js before this module is required
 const { createClient } = require('@supabase/supabase-js');
 
-// 1. Load Environment Variables
 const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_KEY;
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-// 2. Failsafe: Prevent the server from booting if DB credentials are missing
 if (!supabaseUrl || !supabaseKey) {
-  throw new Error('❌ FATAL: Missing Supabase Environment Variables. Check your .env file or Render environment settings.');
+  throw new Error(
+    '❌ FATAL: Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY.\n' +
+    '  → Use the service_role key (starts with eyJ...), NOT the anon/publishable key.\n' +
+    '  → Find it in: Supabase Dashboard → Settings → API → service_role'
+  );
 }
 
-// 3. Initialize the global Supabase Client
-const supabase = createClient(supabaseUrl, supabaseKey);
+// auth.persistSession = false: This is a server-side bot, not a browser.
+// No user sessions needed — we always operate as the service role.
+const supabase = createClient(supabaseUrl, supabaseKey, {
+  auth: { persistSession: false }
+});
 
-// Export for use across all flows, webhook handlers, and cron jobs
 module.exports = supabase;
