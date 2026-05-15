@@ -29,8 +29,12 @@ async function processIncomingMessage(from, messageObj) {
       } else if (messageObj.interactive.type === 'list_reply') {
         payload = messageObj.interactive.list_reply.id;
       }
+    } else if (messageObj.type === 'button') {
+      // 🚨 THE FIX: Catch Template Quick-Reply Buttons!
+      isButton = true;
+      payload = messageObj.button.payload || messageObj.button.text;
     } else {
-      console.log(`⚠️  Ignoring type: ${messageObj.type}`);
+      console.log(`⚠️  Ignoring unsupported message type: ${messageObj.type}`);
       return;
     }
 
