@@ -7,6 +7,20 @@ const CS_NUMBER = process.env.CUSTOMER_SERVICE_NUMBER || '2347079722171'
 async function handleArtisanFlow(profile, payload, isButton) {
   const from = profile.phone_number;
   const command = typeof payload === 'string' ? payload.toUpperCase() : '';
+  
+  // If the payload is a client button, immediately hand it back to the Client Flow!
+  if (command.startsWith('CLIENT_ACCEPT') || command.startsWith('CLIENT_REJECT')) {
+    return false; 
+  }
+
+  // If the Artisan is currently in the middle of booking a service for themselves, ignore them here!
+  const clientStates = [
+    'AWAITING_CATEGORY', 'AWAITING_ZONE', 'AWAITING_DESC', 
+    'APPROVING_ARTISAN', 'VERIFYING_PRICE', 'AWAITING_RATING'
+  ];
+  if (clientStates.includes(profile.current_status)) {
+    return false; 
+  }
 
   // --- 1. JOB ACCEPTANCE ---
   if (command.includes('ACCEPT') || command.includes('✅') || command === 'YES') {
